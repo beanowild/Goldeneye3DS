@@ -146,7 +146,7 @@ def thread_ids(gdb):
     return threads
 
 
-def profile(gdb, n, top):
+def profile(gdb, n, top, lines=0):
     """Sample each thread's PC n times; print the busiest functions."""
     import collections
     import random
@@ -177,12 +177,22 @@ def profile(gdb, n, top):
         leaf = collections.Counter()
         for pc, lr in zip(v, callers[t]):
             f = (loc.get("0x%x" % pc) or "?").split()[0]
-            if f in ("memcpy", "memset", "memcmp", "fminf", "fmaxf", "__fpclassifyf", "roundf", "floorf", "ceilf"):
-                leaf[f + " <- " + (loc.get("0x%x" % lr) or "?").split()[0]] += 1
+            if f in ("memcpy", "memset", "memcmp", "fminf", "fmaxf", "__fpclassifyf", "roundf", "floorf",
+                     "ceilf") or f.startswith("svc"):
+                who = (loc.get("0x%x" % lr) or "?").split()[0]
+                leaf[f + " <- " + (who if who != "??" else "?? lr 0x%x" % lr)] += 1
         for name, c in leaf.most_common(12):
             if c * 200 < len(v):
                 break
             print("   %5.1f%%  %s" % (100.0 * c / len(v), name))
+        # --lines: the busiest source lines of a thread that is mostly running
+        busy = sum(1 for pc in v if not (loc.get("0x%x" % pc) or "?").startswith("svc"))
+        if lines and busy * 2 > len(v):
+            by_line = collections.Counter((loc.get("0x%x" % pc) or "?").replace("M:/Goldeneye 3ds/", "")
+                                          for pc in v)
+            print("   busiest lines:")
+            for name, c in by_line.most_common(lines):
+                print("   %5.1f%%  %s" % (100.0 * c / len(v), name))
 
 
 def main():
@@ -196,6 +206,8 @@ def main():
     ap.add_argument("--screenshot", help="PNG to write the renderer's colour buffer to")
     ap.add_argument("--profile", type=int, help="sample every thread's PC this many times")
     ap.add_argument("--top", type=int, default=25, help="functions listed per thread (--profile)")
+    ap.add_argument("--lines", type=int, default=0,
+                    help="also list this many busiest source lines of a busy thread (--profile)")
     args = ap.parse_args()
 
     home = ra.AZAHAR_AUTO if (ra.AZAHAR_AUTO / "azahar.exe").is_file() else ra.AZAHAR
@@ -249,7 +261,7 @@ def main():
             screenshot(gdb, args.screenshot)
 
         if args.profile:
-            profile(gdb, args.profile, args.top)
+            profile(gdb, args.profile, args.top, args.lines)
             gdb.cmd("k", reply=False)
             return
 

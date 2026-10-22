@@ -135,6 +135,14 @@ static struct {
 
 static int s_inited;
 
+/* load_vertices' transform is out of date: cleared wherever one of its
+ * inputs changes (matrices, viewport, framebuffer, screen mapping, fog). */
+static int s_xf_valid;
+
+/* __builtin_fminf/fmaxf are library calls here (with NaN checks) */
+static inline float minf(float a, float b) { return a < b ? a : b; }
+static inline float maxf(float a, float b) { return a > b ? a : b; }
+
 /* Per-task counts, for the heartbeat log (f3d_stats). */
 static struct { u32 cmds, vtx, tris, culled, fills, dls, rebuilds, changes, draws, texchanges; } s_stats, s_last;
 static u64 s_times[4] = { 0, 0, 0, ~0ull };   /* see f3d_take_times */
@@ -267,7 +275,7 @@ Gfx *f3d_gfx_nearclip(Gfx *g, float scale)
 /* N64 framebuffer pixels -> top screen pixels: sx = px * kx + ox. */
 static void fb_map(float *kx, float *ky, float *ox, float *oy)
 {
-    float fit = __builtin_fminf(SCREEN_W / R.fb_w, SCREEN_H / R.fb_h);
+    float fit = minf(SCREEN_W / R.fb_w, SCREEN_H / R.fb_h);
     *kx = fit + (SCREEN_W / R.fb_w - fit) * R.wide;
     *ky = fit + (SCREEN_H / R.fb_h - fit) * R.wide;
     *ox = (SCREEN_W - R.fb_w * *kx) * 0.5f;
@@ -374,10 +382,10 @@ static void menu_layer(GfxState *t)
     if (piece) {
         R.menu_pieces++;
         float step = (MENU_BACK - MENU_FRONT) / (float)(s_menu_pieces > 1 ? s_menu_pieces - 1 : 1);
-        R.menu_depth = __builtin_fmaxf(MENU_BACK - step * (float)(R.menu_pieces - 1), MENU_FRONT);
+        R.menu_depth = maxf(MENU_BACK - step * (float)(R.menu_pieces - 1), MENU_FRONT);
         t->stereo_c = R.menu_depth * MENU_STRENGTH;
     } else {
-        t->stereo_c = __builtin_fmaxf(R.menu_depth - MENU_LIFT, 0.0f) * MENU_STRENGTH;
+        t->stereo_c = maxf(R.menu_depth - MENU_LIFT, 0.0f) * MENU_STRENGTH;
     }
 }
 
@@ -717,12 +725,12 @@ static void set_depth_map_from(const Mat *p)
         return;
     float n2 = wn;
     if (R.near_scale < 1.0f)
-        n2 = __builtin_fmaxf(wn * R.near_scale, __builtin_fminf(wn, NEAR_MIN));
+        n2 = maxf(wn * R.near_scale, minf(wn, NEAR_MIN));
     float f2 = wf * FAR_SCALE;
     R.zb = -1.0f / (1.0f / n2 - 1.0f / f2);   /* z/w = -1 at w = n2, 0 at w = f2 */
     R.za = -R.zb / f2;
     R.zmap = 1;
-    R.stereo_c = wn >= STEREO_FLAT_NEAR ? -1.0f : __builtin_fmaxf(STEREO_CONV, wn * STEREO_CONV_NEAR);
+    R.stereo_c = wn >= STEREO_FLAT_NEAR ? -1.0f : maxf(STEREO_CONV, wn * STEREO_CONV_NEAR);
 }
 
 static void set_depth_map(const Mat *p)
@@ -740,6 +748,7 @@ static void update_mvp(void)
         mat_mul(&R.mvp, &R.mv[R.mv_top], &R.proj);
         set_depth_map(&R.mvp);
         R.mvp_dirty = 0;
+        s_xf_valid = 0;
     }
 }
 
@@ -797,8 +806,11 @@ static void load_vertices(const Vtx *src, int v0, int n)
     }
 
     /* Per-load constants, so the loop has no divides but one per vertex. */
-    Xform xf;
-    xform_setup(&xf);
+    static Xform xf;
+    if (!s_xf_valid) {
+        xform_setup(&xf);
+        s_xf_valid = 1;
+    }
     const float *px = xf.px, *py = xf.py, *pz = xf.pz, *pw = xf.pw;
     const float ks = R.tex_s * (1.0f / 32), kt = R.tex_t * (1.0f / 32);
     const int lit = (R.geom & G_LIGHTING) != 0, fog = (R.geom & G_FOG) != 0;
@@ -1010,10 +1022,10 @@ static void set_scissor(u32 w0, u32 w1)
     fb_to_screen(((w1 >> 12) & 0xFFF) / 4.0f, (w1 & 0xFFF) / 4.0f, &sx1, &sy1);
     sx0 = __builtin_floorf(sx0); sy0 = __builtin_floorf(sy0);
     sx1 = __builtin_ceilf(sx1); sy1 = __builtin_ceilf(sy1);
-    R.scissor[0] = (u16)__builtin_fmaxf(sx0, 0.0f);
-    R.scissor[1] = (u16)__builtin_fmaxf(sy0, 0.0f);
-    R.scissor[2] = (u16)__builtin_fminf(__builtin_fmaxf(sx1, 0.0f), SCREEN_W);
-    R.scissor[3] = (u16)__builtin_fminf(__builtin_fmaxf(sy1, 0.0f), SCREEN_H);
+    R.scissor[0] = (u16)maxf(sx0, 0.0f);
+    R.scissor[1] = (u16)maxf(sy0, 0.0f);
+    R.scissor[2] = (u16)minf(maxf(sx1, 0.0f), SCREEN_W);
+    R.scissor[3] = (u16)minf(maxf(sy1, 0.0f), SCREEN_H);
     if (R.scissor[2] <= R.scissor[0] || R.scissor[3] <= R.scissor[1]) {
         R.scissor[0] = R.scissor[1] = 0;   /* nothing drawn passes; keep it */
         R.scissor[2] = R.scissor[3] = 1;   /* non-empty so it isn't "none" */
@@ -1415,6 +1427,7 @@ static void run_dl(Gfx *start)
                     R.wide = v.f;
                 else
                     R.anchor = v.f;
+                s_xf_valid = 0;
             } else if ((w0 & 0xFFFFFF) == PROF_TAG) {
                 /* a room's list, then the end of it (developer timer) */
                 static u64 s_room_t0;
@@ -1508,6 +1521,7 @@ static void run_dl(Gfx *start)
             case G_MW_FOG:
                 R.fog_m = (s16)(w1 >> 16);
                 R.fog_o = (s16)(w1 & 0xFFFF);
+                s_xf_valid = 0;
                 break;
             case G_MW_NUMLIGHT:
                 R.num_lights = (int)((w1 - 0x80000000u) / 32) - 1;
@@ -1531,6 +1545,7 @@ static void run_dl(Gfx *start)
                 R.vp_sy = vp->vscale[1] / 4.0f;
                 R.vp_tx = vp->vtrans[0] / 4.0f;
                 R.vp_ty = vp->vtrans[1] / 4.0f;
+                s_xf_valid = 0;
             } else if (index == G_MV_LOOKATX || index == G_MV_LOOKATY) {
                 const Light_t *lt = &((Light *)p)->l;
                 for (int k = 0; k < 3; k++)
@@ -1693,6 +1708,7 @@ static void run_dl(Gfx *start)
             R.cimg = (u32)(uintptr_t)resolve(w1);
             R.fb_w = (float)((w0 & 0xFFF) + 1);
             R.fb_h = R.fb_w * 0.75f;
+            s_xf_valid = 0;
             break;
         case OP(G_SETZIMG):
             R.zimg = (u32)(uintptr_t)resolve(w1);
@@ -1732,6 +1748,7 @@ static u64 f3d_task_run(OSTask *task)
     __builtin_memset(&R.seg, 0, sizeof R.seg);
     R.mv_top = 0;
     R.mvp_dirty = 1;
+    s_xf_valid = 0;
     R.geom = 0;
     R.fb_w = 320.0f;
     R.wide = 0.0f;
