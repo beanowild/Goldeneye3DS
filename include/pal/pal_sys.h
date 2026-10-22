@@ -78,6 +78,7 @@ void pal_thread_set_priority(PalThread *t, int prio);
  * on the SD card: for numbers wanted from runs on real hardware. */
 void pal_perf_log(const char *fmt, ...);
 void pal_thread_yield(void);
+void pal_sleep_us(uint32_t us);
 
 /* End the calling thread. Never returns. */
 void pal_thread_exit(void) __attribute__((noreturn));

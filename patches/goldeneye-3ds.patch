@@ -24560,7 +24560,7 @@ index 2924c75f..692537d8 100644
    if (((header_check = src[0]) != (*header_alias).unk00) || (src[1] != (*p).unk05))
    {
 diff --git a/src/game/frametiming.c b/src/game/frametiming.c
-index cb8e24a3..098a840b 100644
+index cb8e24a3..547430b9 100644
 --- a/src/game/frametiming.c
 +++ b/src/game/frametiming.c
 @@ -26,6 +26,13 @@ u32 copy_of_osgetcount_value_0 = 0;
@@ -24588,7 +24588,7 @@ index cb8e24a3..098a840b 100644
  
      lastFrameCounter = currentFrameCounter;
      currentFrameCounter = (s32) (currentFrameCounter + deltaFrames);
-@@ -72,17 +83,64 @@ void updateFrameCounters(s32 deltaFrames)
+@@ -72,17 +83,85 @@ void updateFrameCounters(s32 deltaFrames)
   * Waits until the appropriate time has passed before updating the frame counters.
   * This function effectively controls the frame rate by waiting for the next tick.
   */
@@ -24610,11 +24610,18 @@ index cb8e24a3..098a840b 100644
 +    return s_portMin;
 +}
 +
++/* per-frame work, for the perf line (os_vi.c) */
++u32 g_PortWorkSum, g_PortWorkMax, g_PortWorkN;
++
 +static void s_portFrameWork(u32 work)
 +{
 +    extern int pal_is_new3ds(void);
 +    extern int pal_debug_has_token(const char *token);
 +    static s32 s_fixed = -1;
++    g_PortWorkSum += work;
++    g_PortWorkN++;
++    if (work > g_PortWorkMax)
++        g_PortWorkMax = work;
 +    if (s_fixed < 0)
 +        s_fixed = pal_is_new3ds() || pal_debug_has_token("-fps20");
 +    if (s_fixed)
@@ -24635,6 +24642,20 @@ index cb8e24a3..098a840b 100644
    
 +#ifdef TARGET_3DS
 +  s_portFrameWork(osGetCount() - copy_of_osgetcount_value_1);
++  {
++    /* sleep through most of the wait instead of spinning: the core goes
++     * to the game's other threads, and its idle time shows in perf.log */
++    extern void pal_sleep_us(u32 us);
++    u32 need = s_portMinFrames() * 775875u - 77587u;
++    if (frameDelay * 775875u - 387937u > need)
++      need = frameDelay * 775875u - 387937u;
++    for (;;) {
++      u32 el = osGetCount() - copy_of_osgetcount_value_1;
++      if (el + 46875u >= need)   /* within a millisecond: spin the rest */
++        break;
++      pal_sleep_us(((need - el) - 46875u) / 47u);
++    }
++  }
 +#endif
    do {
      #ifdef REFRESH_PAL

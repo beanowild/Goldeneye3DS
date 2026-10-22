@@ -134,6 +134,16 @@ void osPortVblank(void)
                 (unsigned long)pal_audio_underruns());
         s_held2 = s_held3 = 0;
         {
+            /* the game's own work per frame (frametiming.c: up to its wait
+             * for the next frame), in osGetCount ticks */
+            extern u32 g_PortWorkSum, g_PortWorkMax, g_PortWorkN;
+            float cms = 1000.0f / (OS_CPU_COUNTER / 1.0f);
+            if (g_PortWorkN)
+                pal_perf_log("ge007: game work %.2f ms a frame (max %.2f)",
+                             (double)(g_PortWorkSum / (float)g_PortWorkN * cms), (double)(g_PortWorkMax * cms));
+            g_PortWorkSum = g_PortWorkMax = g_PortWorkN = 0;
+        }
+        {
             extern int g_gfx_debug_enabled;
             u64 pr[PAL_PROF_COUNT];
             pal_prof_take(pr);

@@ -128,6 +128,11 @@ void pal_thread_set_priority(PalThread *t, int prio)
     svcSetThreadPriority(h, prio);
 }
 
+void pal_sleep_us(uint32_t us)
+{
+    svcSleepThread((s64)us * 1000);
+}
+
 void pal_thread_yield(void)
 {
     /* Sleeping 0 ns hands the core to another ready thread of the same
