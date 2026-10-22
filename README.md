@@ -4,6 +4,18 @@ A native 3DS port of the [GoldenEye 007 N64 decompilation](https://github.com/n6
 **No game data is included.** You need your own ROM. The port reads it from
 `sdmc:/3ds/ge007/rom.z64` (or `baserom.us.z64`) at runtime.
 
+## Making the CIA (no building needed)
+
+1. Get `romtocia.exe` (Windows).
+2. Drag your **GoldenEye 007 (USA)** ROM (`.z64`, `.v64` or `.n64`) onto it.
+3. It writes `GoldenEye 007 (3DS).cia` next to the ROM in about 15 seconds.
+   Install that with FBI. The ROM is inside the CIA, so nothing goes on the SD card.
+
+The exe holds the compiled port and the CIA tools, but nothing from the ROM. It
+checks the ROM's SHA-1 and builds the 3D HOME Menu banner from it. The CIA it
+makes contains your ROM, so don't share it. To rebuild the exe:
+`.tools/venv/Scripts/python.exe tools/romtocia/build_exe.py` (after `builder.py`).
+
 ## Status
 
 **The game boots in a 3DS emulator.** The full decomp compiles for ARM,

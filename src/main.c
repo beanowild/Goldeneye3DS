@@ -164,6 +164,7 @@ static void run_input_test(void)
 int main(void)
 {
     gfxInitDefault();
+    romfsInit(); /* the CIA's ROM, if it has one (os_port.h); fails harmlessly otherwise */
 
 #ifdef GE_INTEGRATE
     run_game();

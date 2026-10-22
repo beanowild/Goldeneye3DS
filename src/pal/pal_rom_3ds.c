@@ -79,9 +79,13 @@ const char *pal_rom_open(const char *const *paths, PalRomMode mode,
         }
     }
     if (!f) {
+        /* name the SD card path: nobody can put a file into romfs: */
+        const char *const *p = paths;
+        while (*p && strncmp(*p, "sdmc:", 5) != 0)
+            p++;
         snprintf(s_err, sizeof(s_err),
                  "GoldenEye ROM not found.\n\nCopy your own dump to:\n%s",
-                 paths[0] ? paths[0] : "(no path configured)");
+                 *p ? *p : "(no path configured)");
         return s_err;
     }
     s_file = f;

@@ -11,8 +11,10 @@
 extern "C" {
 #endif
 
-/* ROM locations tried in order. */
+/* ROM locations tried in order. romfs: is the CIA's own copy (made by
+ * tools/romtocia); the .3dsx has none and uses the SD card. */
 #define OS_PORT_ROM_PATHS             \
+    "romfs:/rom.z64",                 \
     "sdmc:/3ds/ge007/rom.z64",        \
     "sdmc:/3ds/ge007/baserom.us.z64"
 

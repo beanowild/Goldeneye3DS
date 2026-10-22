@@ -6,8 +6,11 @@ HOME Menu banner (tools/banner) and its sound.
 
 Uses build/ge007.elf and build/ge007.smdh (run builder.py first),
 banner/banner.cgfx (tools/banner/build.ps1), and from .tools/: bannertool
-and makerom. The game data still comes from the SD card at run time
-(sdmc:/3ds/ge007/rom.z64), as for the .3dsx; the CIA holds no ROM data.
+and makerom. Without --rom the game data comes from the SD card at run
+time (sdmc:/3ds/ge007/rom.z64), as for the .3dsx; with --rom the ROM goes
+into the CIA's RomFS (romfs:/rom.z64, tried first) and the CIA is complete.
+Never publish a CIA made with --rom. tools/romtocia makes one on the
+player's own PC instead.
 
 The sound: any WAV (PCM or float, mono or stereo). The HOME Menu wants
 stereo 16-bit and no longer than 2.9375 s (longer sounds glitch or stop
@@ -33,6 +36,7 @@ UNIQUE_ID = 0xE0070          # homebrew range (0x0F800-0xFF7FF)
 MAX_SECONDS = 2.9375
 FADE_SECONDS = 0.02
 SOUND_RATE = 32728           # the 3DS's own output rate, as official banners use
+VERSION = "1.1.9"            # bump so a new CIA installs over the last one
 
 
 def read_wav(path):
@@ -123,6 +127,17 @@ def run(cmd):
         sys.exit(f"failed: {Path(str(cmd[0])).name}")
 
 
+def romfs_rsf(rom, work):
+    """ge007.rsf plus a RomFS holding rom (as rom.z64); returns the new rsf."""
+    romfs = work / "romfs"
+    romfs.mkdir(parents=True, exist_ok=True)
+    (romfs / "rom.z64").write_bytes(Path(rom).read_bytes())
+    rsf = work / "ge007_romfs.rsf"
+    text = Path(__file__).with_name("ge007.rsf").read_text()
+    rsf.write_text(text.rstrip() + f"\n\nRomFs:\n  RootPath: {romfs.as_posix()}\n")
+    return rsf
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1].strip())
     ap.add_argument("--sound", default=ROOT / "banner" / "Banner new.wav", type=Path)
@@ -130,7 +145,9 @@ def main():
     ap.add_argument("--elf", default=ROOT / "build" / "ge007.elf", type=Path)
     ap.add_argument("--smdh", default=ROOT / "build" / "ge007.smdh", type=Path)
     ap.add_argument("--out", default=ROOT / "dist" / "ge007.cia", type=Path)
-    ap.add_argument("--version", default="1.1.9", help="major.minor.micro")
+    ap.add_argument("--version", default=VERSION, help="major.minor.micro")
+    ap.add_argument("--rom", type=Path, help="put this .z64 ROM in the CIA's RomFS "
+                                              "(for your own use only)")
     ap.add_argument("--silent", action="store_true", help="a second of silence for the sound")
     ap.add_argument("--flat", type=Path, help="a flat banner from this PNG instead of the CGFX")
     ap.add_argument("--uid", type=lambda x: int(x, 0), default=UNIQUE_ID,
@@ -160,10 +177,11 @@ def main():
         run([BANNERTOOL, "makesmdh", "-s", args.title, "-l", args.title,
              "-p", "Rare", "-i", args.icon, "-o", smdh])
 
+    rsf = romfs_rsf(args.rom, work) if args.rom else Path(__file__).with_name("ge007.rsf")
     major, minor, micro = args.version.split(".")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     common = ["-target", "t", "-exefslogo",
-              "-rsf", Path(__file__).with_name("ge007.rsf"),
+              "-rsf", rsf,
               "-elf", args.elf, "-icon", smdh, "-banner", banner,
               f"-DAPP_TITLE={args.title[:8]}", f"-DAPP_PRODUCT_CODE={PRODUCT_CODE}",
               f"-DAPP_UNIQUE_ID=0x{args.uid:05X}", f"-DAPP_VERSION_MAJOR={major}"]

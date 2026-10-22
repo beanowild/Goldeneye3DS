@@ -3,8 +3,8 @@
 # specific to this port:
 #   - New 3DS: 804 MHz, L2 cache, core 2 (the RSP task thread runs there,
 #     os_sp.c) and the 124MB memory mode; the Old 3DS gets 64MB as for a .3dsx
-#   - the SD card (sdmc:/3ds/ge007: the ROM, saves, logs)
-#   - no RomFS: everything comes from the SD card, as for the .3dsx
+#   - the SD card (sdmc:/3ds/ge007: saves, logs, and the ROM if the CIA has none)
+#   - no RomFS here; make_cia.py --rom / tools/romtocia append one holding the ROM
 
 BasicInfo:
   Title                   : $(APP_TITLE)
