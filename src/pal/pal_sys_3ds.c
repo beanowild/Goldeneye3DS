@@ -201,6 +201,13 @@ int pal_debug_write(const char *path, const void *data, size_t size)
 }
 
 /* A developer text file into buf (NUL-terminated); its length, or -1. */
+int pal_debug_has_token(const char *token)
+{
+    char tok[256];
+    return pal_debug_read_text("sdmc:/3ds/ge007/tokens.txt", tok, sizeof tok) > 0 &&
+           strstr(tok, token) != NULL;
+}
+
 int pal_debug_read_text(const char *path, char *buf, int size)
 {
     FILE *f = fopen(path, "r");

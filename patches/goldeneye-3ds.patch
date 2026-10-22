@@ -24560,7 +24560,7 @@ index 2924c75f..692537d8 100644
    if (((header_check = src[0]) != (*header_alias).unk00) || (src[1] != (*p).unk05))
    {
 diff --git a/src/game/frametiming.c b/src/game/frametiming.c
-index cb8e24a3..2de9b39c 100644
+index cb8e24a3..098a840b 100644
 --- a/src/game/frametiming.c
 +++ b/src/game/frametiming.c
 @@ -26,6 +26,13 @@ u32 copy_of_osgetcount_value_0 = 0;
@@ -24588,28 +24588,57 @@ index cb8e24a3..2de9b39c 100644
  
      lastFrameCounter = currentFrameCounter;
      currentFrameCounter = (s32) (currentFrameCounter + deltaFrames);
-@@ -72,6 +83,20 @@ void updateFrameCounters(s32 deltaFrames)
+@@ -72,17 +83,64 @@ void updateFrameCounters(s32 deltaFrames)
   * Waits until the appropriate time has passed before updating the frame counters.
   * This function effectively controls the frame rate by waiting for the next tick.
   */
 +#ifdef TARGET_3DS
-+/* Old 3DS: at least three retraces a frame, a steady 20 FPS (the N64's
-+ * usual rate). It ran anywhere from 16 to 29, which looked rougher than an
-+ * even 20; game speed follows the retraces counted either way. */
++/* Old 3DS: whole frames of two retraces (30 FPS) while the frames fit,
++ * three (20 FPS) while they don't. Frames alternating 2 and 3 retraces
++ * look rougher than either rate held, so the choice follows the average
++ * work time with a margin each way. Game speed follows the retraces
++ * counted either way. -fps20 holds 20. */
++static u32 s_portMin = 0;
++static u32 s_portWorkAvg;   /* osGetCount ticks, smoothed */
++
 +static u32 s_portMinFrames(void)
 +{
 +    extern int pal_is_new3ds(void);
-+    static u32 s_min;
-+    if (s_min == 0)
-+        s_min = pal_is_new3ds() ? 1 : 3;
-+    return s_min;
++    extern int pal_debug_has_token(const char *token);
++    if (s_portMin == 0)
++        s_portMin = pal_is_new3ds() ? 1 : pal_debug_has_token("-fps20") ? 3 : 2;
++    return s_portMin;
++}
++
++static void s_portFrameWork(u32 work)
++{
++    extern int pal_is_new3ds(void);
++    extern int pal_debug_has_token(const char *token);
++    static s32 s_fixed = -1;
++    if (s_fixed < 0)
++        s_fixed = pal_is_new3ds() || pal_debug_has_token("-fps20");
++    if (s_fixed)
++        return;
++    if (work > 4u * 775875u)
++        work = 4u * 775875u;    /* loads and hitches */
++    s_portWorkAvg = s_portWorkAvg - (s_portWorkAvg >> 3) + (work >> 3);
++    if (s_portMin == 2 && s_portWorkAvg > 775875u * 19 / 10)
++        s_portMin = 3;
++    else if (s_portMin == 3 && s_portWorkAvg < 775875u * 16 / 10)
++        s_portMin = 2;
 +}
 +
 +#endif
  void waitForNextFrame(void) //maybe WaitForTick
  {
    u32 nextFrameTime; //next frame time?
-@@ -82,7 +107,14 @@ void waitForNextFrame(void) //maybe WaitForTick
+   
++#ifdef TARGET_3DS
++  s_portFrameWork(osGetCount() - copy_of_osgetcount_value_1);
++#endif
+   do {
+     #ifdef REFRESH_PAL
+     nextFrameTime = ((osGetCount() - copy_of_osgetcount_value_1) + 465525) / 931050; 
      #else
      nextFrameTime = ((osGetCount() - copy_of_osgetcount_value_1) + 387937) / 775875; //current time + 1/5
      #endif
@@ -37951,7 +37980,7 @@ index 48ef1265..4390f564 100644
      return DL;
  }
 diff --git a/src/game/model.c b/src/game/model.c
-index 955b6a1f..6253a7e1 100644
+index 955b6a1f..2572e5d2 100644
 --- a/src/game/model.c
 +++ b/src/game/model.c
 @@ -2158,6 +2158,15 @@ void modelUpdateNodeRelations(Model *model)
@@ -38001,7 +38030,53 @@ index 955b6a1f..6253a7e1 100644
  }
  
  
-@@ -5612,6 +5622,9 @@ u32 *sub_GAME_7F07549C(void *arg0, f32 *arg1, f32 *arg2, ModelNode **nodeptr)
+@@ -4246,6 +4256,21 @@ Model Type 4: Normal Fog/Lighting object
+ These are applied to each part of an object at runtime and can be overridden. loading the next part will use these values once more.
+ GeometryMode is not in setup and is persistent accross parts.
+ */
++#ifdef TARGET_3DS
++/* A model part's list between tags: the renderer keeps it on the GPU and
++ * draws it again (f3d.c f3d_gfx_part), parts of the same model sharing it. */
++extern Gfx *f3d_gfx_part(Gfx *g, int begin);
++static Gfx *portPart(Gfx *g, Gfx *dl)
++{
++    g = f3d_gfx_part(g, 1);
++    gSPDisplayList(g++, dl);
++    return f3d_gfx_part(g, 0);
++}
++#define PORT_PART(dl) (renderdata->gdl = portPart(renderdata->gdl, dl))
++#else
++#define PORT_PART(dl) gSPDisplayList(renderdata->gdl++, dl)
++#endif
++
+ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *node)
+ {
+     union ModelRoData *rodata = node->Data;
+@@ -4284,12 +4309,12 @@ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *nod
+ 
+                 gSPSegment(renderdata->gdl++, SPSEGMENT_MODEL_VTX, osVirtualToPhysical(rwdata->DisplayListCollisions.Vertices));
+ 
+-                gSPDisplayList(renderdata->gdl++, rwdata->DisplayListCollisions.gdl);
++                PORT_PART(rwdata->DisplayListCollisions.gdl);
+ 
+                 if (rodata->DisplayListCollisions.ModelType == 3 && rodata->DisplayListCollisions.Secondary)
+                 {
+                     modelApplyRenderModeType3(renderdata, FALSE);
+-                    gSPDisplayList(renderdata->gdl++, rodata->DisplayListCollisions.Secondary);
++                    PORT_PART(rodata->DisplayListCollisions.Secondary);
+                 }
+             }
+         }
+@@ -4311,7 +4336,7 @@ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *nod
+ 
+                 modelApplyRenderModeType4(renderdata, FALSE);
+ 
+-                gSPDisplayList(renderdata->gdl++, rodata->DisplayListCollisions.Secondary);
++                PORT_PART(rodata->DisplayListCollisions.Secondary);
+             }
+         }
+     }
+@@ -5612,6 +5637,9 @@ u32 *sub_GAME_7F07549C(void *arg0, f32 *arg1, f32 *arg2, ModelNode **nodeptr)
   * Address 7F0754BC.
   * Copy animation from ROM to RAM
  */
@@ -38011,7 +38086,7 @@ index 955b6a1f..6253a7e1 100644
  s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
  {
      s32 ret;
-@@ -5628,6 +5641,15 @@ s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
+@@ -5628,6 +5656,15 @@ s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
          // Load that frame from RAM
          ret = anim->address + (frame * frameSize);
      }

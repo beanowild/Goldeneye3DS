@@ -116,14 +116,16 @@ enum { GFX_STEREO_FLAT, GFX_STEREO_WORLD, GFX_STEREO_SKY,
 /* Front faces wind counter-clockwise in clip space (y up), as the N64's. */
 enum { GFX_CULL_NONE, GFX_CULL_BACK, GFX_CULL_FRONT };
 
-/* Model space to clip space for the draws that follow (f3d.v.pica xf):
- * rows[0..3] give clip x, y, z, w as rows . (x, y, z, 1); rows[4] the
- * game's own clip z and rows[5] = (scale, offset, on, 0) the RSP's fog,
- * which then replaces vertex alpha: 255 * clamp(z / w * scale + offset),
- * 0 behind the eye. NULL: identity, fog off. Every frame starts with
- * identity. */
-#define GFX_XFORM_ROWS 6
-void gfxb_set_xform(const float rows[GFX_XFORM_ROWS][4]);
+/* Model space to clip space for the draws that follow (f3d.v.pica xf): a
+ * palette of n transforms (at most GFX_XFORM_MAX), each GFX_XFORM_ROWS
+ * rows: clip x, y, z, w as rows . (x, y, z, 1), then the game's own clip
+ * z. A vertex's w is GFX_XFORM_ROWS * the index of its transform. fog =
+ * (scale, offset, on, 0): the RSP's fog, replacing vertex alpha with 255 *
+ * clamp(z / w * scale + offset), 0 behind the eye. rows NULL: vertices are
+ * in clip space already (every frame starts so). */
+#define GFX_XFORM_ROWS 5
+#define GFX_XFORM_MAX 15
+void gfxb_set_xform(const float (*rows)[4], int n, const float fog[4]);
 
 /* Static geometry: vertices and indices kept on the GPU from frame to
  * frame. gfxb_static_alloc gives pool memory (8-byte aligned, NULL when

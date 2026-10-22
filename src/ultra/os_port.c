@@ -33,12 +33,13 @@ const char *osPortInit(void)
 
     pal_sys_init();
     osPortTimeInit();
+    /* Not fatal: without the DSP the game runs muted (see pal_audio.h).
+     * Before the task threads: where they run depends on it (os_sp.c). */
+    pal_audio_init();
+
     osPortSpInit();
     f3d_init();
     asp_init();
-
-    /* Not fatal: without the DSP the game runs muted (see pal_audio.h). */
-    pal_audio_init();
 
     const char *err = pal_rom_open(rom_paths, OS_PORT_ROM_MODE, ge_rom_image,
                                    (uint32_t)(ge_rom_image_end - ge_rom_image));

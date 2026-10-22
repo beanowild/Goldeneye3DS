@@ -30,6 +30,7 @@
  */
 #include <ultra64.h>
 
+#include "pal/pal_audio.h"
 #include "pal/pal_sys.h"
 #include "ultra/os_event.h"
 #include "ultra/os_port.h"
@@ -120,7 +121,14 @@ static void task_thread(void *arg)
 
 void osPortSpInit(void)
 {
-    if (!pal_thread_start_spare_core(task_thread, &s_lanes[LANE_GFX], TASK_THREAD_STACK, PAL_PRIO_RSP))
+    /* Old 3DS with the synthesizer on the DSP (audio/dsp_synth.c): the
+     * audio tasks are empty, so core 1 is free for the graphics tasks and
+     * core 0 is left to the game, as the N64 split CPU and RSP. */
+    if (!pal_is_new3ds() && pal_audio_voices_available() && !pal_debug_has_token("-cpuaudio")) {
+        pal_log("ge007: graphics tasks on core 1");
+        if (!pal_thread_start_sys_core(task_thread, &s_lanes[LANE_GFX], TASK_THREAD_STACK, PAL_PRIO_RSP))
+            pal_fatal("could not start the graphics task thread");
+    } else if (!pal_thread_start_spare_core(task_thread, &s_lanes[LANE_GFX], TASK_THREAD_STACK, PAL_PRIO_RSP))
         pal_fatal("could not start the graphics task thread");
     if (!pal_thread_start_sys_core(task_thread, &s_lanes[LANE_AUDIO], TASK_THREAD_STACK, PAL_PRIO_RSP))
         pal_fatal("could not start the audio task thread");

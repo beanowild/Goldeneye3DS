@@ -109,6 +109,9 @@ static struct {
     int dirty;              /* state needs rebuilding from the above */
     int tex_dirty;          /* only its textures do (tiles or TMEM changed) */
     int texmask, mip;       /* from the last rebuild: units read, mipmapped */
+    CcInput cc_in;          /* and the combiner's input, */
+    int cc_n;               /* the stages it made (0xFF: copy mode, none), */
+    int fog_stage;          /* the fog stage added after, or -1 */
     int state_live;         /* R.state is the backend's current state */
     int noise;              /* state compares alpha with noise on unit 1 */
     float noise_off[2];     /* noise texture offset, new every task */
@@ -511,6 +514,8 @@ static const GfxState *current_state(void)
 
         __builtin_memset(n, 0, sizeof *n);
         __builtin_memcpy(n->scissor, R.scissor, sizeof R.scissor);
+        R.cc_n = 0xFF;
+        R.fog_stage = -1;
         n->shade = (R.geom & G_SHADE) != 0;
         if (R.zmap && R.stereo_c > 0) {   /* perspective */
             n->stereo = GFX_STEREO_WORLD;
@@ -557,6 +562,8 @@ static const GfxState *current_state(void)
             CcInput in = { R.cc0, R.cc1, cycle == (G_CYC_2CYCLE >> G_MDSFT_CYCLETYPE),
                            R.prim_c, R.env_c, R.prim_lod, lod_frac };
             texmask = cc_compile(&in, n);
+            R.cc_in = in;
+            R.cc_n = n->num_stages;
         }
         R.noise = 0;
         /* blender cycle 1 = FOG * alpha + IN * (1 - alpha), alpha being the
@@ -577,6 +584,7 @@ static const GfxState *current_state(void)
                 t->a.func = GFX_FN_REPLACE;
                 t->a.src[0] = t->a.src[1] = t->a.src[2] = GFX_SRC_PREVIOUS;
                 t->constant = R.fog_c;
+                R.fog_stage = (int)(t - n->stages);
             }
         }
         /* G_RM_AA_PCL_SURF (AA without forced blending, IN * A + MEM * (1 - A),
@@ -764,9 +772,8 @@ typedef struct {
     float fog_m, fog_o;
 } Xform;
 
-static void xform_setup(Xform *xf)
+static void xform_from(Xform *xf, const Mat *m)
 {
-    const Mat *m = &R.mvp;
     float kx, ky, ox, oy;
     fb_map(&kx, &ky, &ox, &oy);
     /* NDC -> N64 pixels -> 3DS pixels -> 3DS NDC, folded into one affine map */
@@ -785,6 +792,11 @@ static void xform_setup(Xform *xf)
         xf->pz[3] += R.zb;
     xf->fog_m = R.fog_m * (1.0f / 255);
     xf->fog_o = R.fog_o * (1.0f / 255);
+}
+
+static void xform_setup(Xform *xf)
+{
+    xform_from(xf, &R.mvp);
 }
 
 /* The current transform (cached: see s_xf_valid). */
@@ -1442,7 +1454,9 @@ static void rdp_word(u32 lo, int last)
  * triangles, scissors, the water's per-frame lists) aren't recorded and
  * are always interpreted. Developer token -norooms: always interpret. */
 #define ROOM_TAG 0x3D524Du         /* "=RM" */
-#define ROOM_SLOTS 1024
+#define PART_TAG 0x3D504Du         /* "=PM": a model part's list (begin 1, end 0) */
+#define PART_BIT 0x80000000u       /* in a recording's tag: a model part */
+#define ROOM_SLOTS 4096
 #define ROOM_BUDGET (2 * 1024 * 1024)   /* bytes of recordings' metadata kept */
 #define REC_MAX_V 8192
 #define REC_MAX_TRI 16384
@@ -1456,6 +1470,21 @@ Gfx *f3d_gfx_room(Gfx *g, int room, int secondary, int gen)
 {
     g->words.w0 = ((u32)G_NOOP << 24) | ROOM_TAG;
     g->words.w1 = ((u32)(gen & 0xFFFF) << 16) | ((u32)(room & 0x7FFF) << 1) | (secondary != 0);
+    return g + 1;
+}
+
+/* Model parts (model.c modelRenderNodeDl) go the same way: each part's
+ * list is recorded once and drawn under the model's matrices, instances of
+ * a model sharing the recording. A part loads the model's joint matrices
+ * itself (segment 3), so its vertices go through a palette of them (read
+ * when drawn); and model.c tints each instance (prim, env, fog colours,
+ * following the room's light), so those are taken live: the combiner is
+ * compiled again with them (room_live_states). Keyed by the list, the
+ * model's vertex and colour segments and the render modes. */
+Gfx *f3d_gfx_part(Gfx *g, int begin)
+{
+    g->words.w0 = ((u32)G_NOOP << 24) | PART_TAG;
+    g->words.w1 = begin != 0;
     return g + 1;
 }
 
@@ -1475,6 +1504,10 @@ typedef struct {
 } RoomRegs;
 
 typedef struct { u16 state; u32 cull, first, count; } RecSeg;
+/* How a state's colours were made: the combiner's input, its stages, the
+ * fog stage; live: bit 0 prim, 1 env, 2 fog colour as found on entry
+ * (taken as they are when drawn), not set by the list itself. */
+typedef struct { CcInput in; u8 cc_n, texmask, live; s8 fog_stage; } RecCc;
 typedef struct { u32 start, len; u64 key; } RecTmem;   /* TMEM read as found on entry */
 
 typedef struct {
@@ -1494,6 +1527,13 @@ typedef struct {
     RoomRegs in, out;
     TexRegs tin;
     s16 slot[NUM_VTX];              /* each vertex slot's last load, or -1 */
+    RecCc *cc;                      /* per state */
+    /* Transforms: 0 the one current at the tag, then the list's own matrix
+     * loads (offsets into segment 3, the model's matrices, read when
+     * drawn); last: the one current at the end. */
+    int npal, last_pal;
+    u32 pal_off[GFX_XFORM_MAX];
+    int misses;                     /* recorded again after not fitting (rooms: in a row) */
 } Room;
 
 static Room *s_rooms[ROOM_SLOTS];
@@ -1504,15 +1544,18 @@ static u32 s_pool_gen = 1;
 static int s_pool_full;
 
 enum { WHY_CMD, WHY_LIT, WHY_FOGMIX, WHY_FULL, WHY_ANIM, WHY_SLOT, WHY_TMEM, WHY_TEXKEY, WHY_NOMEM,
-       WHY_NOEND, WHY_COUNT };
+       WHY_NOEND, WHY_UNSTABLE, WHY_COUNT };
 static const char *const s_why[WHY_COUNT] = { "command", "lit", "fog mix", "full", "animated", "slot",
-                                              "tmem", "texture", "memory", "no end" };
+                                              "tmem", "texture", "memory", "no end", "unstable" };
+#define PART_MAX_MISSES 3   /* a part not fitting this often is interpreted from then on */
 static struct { u32 replayed, recorded, missed, bad, why[WHY_COUNT]; } s_rstats;
 
 static struct {
     int on;
     u32 tag, dl;
     int nv, ntri, nseg, nstate, fog, ntex, ntin, cur_state;
+    int npal, cur_pal, misses;
+    u32 pal_off[GFX_XFORM_MAX];
     u32 state_ver;
     u64 need, wrote;
     u32 need_bits[3], wrote_bits[3];
@@ -1529,6 +1572,7 @@ static struct {
     u16 *tri;
     RecSeg *seg;
     GfxState *st;
+    RecCc *cc;
 } REC;
 
 #define TRANGE_NONE 0xFFFFu         /* not a load seen writing TMEM: kept */
@@ -1620,7 +1664,8 @@ static void rec_stop(int why)
 {
     if (REC.on) {
         s_rstats.why[why]++;
-        if (why == WHY_CMD || why == WHY_LIT || why == WHY_FOGMIX || why == WHY_FULL || why == WHY_ANIM) {
+        if (why == WHY_CMD || why == WHY_LIT || why == WHY_FOGMIX || why == WHY_FULL || why == WHY_ANIM ||
+            why == WHY_UNSTABLE) {
             /* the list itself: don't try again */
             int i = (REC.tag & 0xFFFF) % ROOM_SLOTS;
             room_free(i);
@@ -1726,7 +1771,8 @@ static void rec_begin(u32 tag, u32 dl)
         REC.tri = __builtin_malloc(REC_MAX_TRI * 3 * sizeof *REC.tri);
         REC.seg = __builtin_malloc(REC_MAX_SEG * sizeof *REC.seg);
         REC.st = __builtin_malloc(REC_MAX_STATE * sizeof *REC.st);
-        if (!REC.tex || !REC.trange || !REC.v || !REC.tri || !REC.seg || !REC.st) {
+        REC.cc = __builtin_malloc(REC_MAX_STATE * sizeof *REC.cc);
+        if (!REC.tex || !REC.trange || !REC.v || !REC.tri || !REC.seg || !REC.st || !REC.cc) {
             pal_log("f3d: no memory to record rooms");
             s_failed = 1;
             REC.v = NULL;
@@ -1741,6 +1787,9 @@ static void rec_begin(u32 tag, u32 dl)
     REC.fog = -1;
     REC.ntex = REC.ntin = 0;
     REC.cur_state = -1;
+    REC.npal = 1;
+    REC.cur_pal = 0;
+    REC.misses = 0;
     REC.need = REC.wrote = 0;
     __builtin_memset(REC.need_bits, 0, sizeof REC.need_bits);
     __builtin_memset(REC.wrote_bits, 0, sizeof REC.wrote_bits);
@@ -1770,7 +1819,8 @@ static void rec_cmd(u32 w0, u32 w1)
     switch (w0 >> 24) {
     case OP(G_NOOP):
         if ((w0 & 0xFFFFFF) == WIDESCREEN_TAG || (w0 & 0xFFFFFF) == ANCHOR_TAG ||
-            (w0 & 0xFFFFFF) == MENU_TAG || (w0 & 0xFFFFFF) == NEARCLIP_TAG || (w0 & 0xFFFFFF) == ROOM_TAG)
+            (w0 & 0xFFFFFF) == MENU_TAG || (w0 & 0xFFFFFF) == NEARCLIP_TAG || (w0 & 0xFFFFFF) == ROOM_TAG ||
+            ((w0 & 0xFFFFFF) == PART_TAG && w1))
             rec_stop(WHY_CMD);
         break;
     case OP(G_SPNOOP): case OP(G_RDPLOADSYNC): case OP(G_RDPPIPESYNC): case OP(G_RDPTILESYNC):
@@ -1780,6 +1830,27 @@ static void rec_cmd(u32 w0, u32 w1)
     case OP(G_VTX):
         rec_addr(w1);
         return;
+    case OP(G_MTX): {
+        /* a model's own matrix (segment 3), loaded: a palette entry, read
+         * when drawn, so that instances of the model share the recording */
+        if (((w0 >> 16) & 0xFF) != G_MTX_LOAD || (w0 & 0xFFFF) != sizeof(Mtx) || (w1 >> 24) != 3) {
+            rec_stop(WHY_CMD);
+            return;
+        }
+        u32 off = w1 & 0xFFFFFF;
+        int k = 1;
+        while (k < REC.npal && REC.pal_off[k] != off)
+            k++;
+        if (k == REC.npal) {
+            if (REC.npal == GFX_XFORM_MAX) {
+                rec_stop(WHY_FULL);
+                return;
+            }
+            REC.pal_off[REC.npal++] = off;
+        }
+        REC.cur_pal = k;
+        return;
+    }
     case OP(G_DL): {
         /* The water lists (unk_092E50.c): the game rewrites their tile
          * offsets and mip blend every frame to scroll the water (Dam). */
@@ -1862,7 +1933,8 @@ static void rec_vertices(const Vtx *src, int v0, int n, float ks, float kt, int 
     for (int i = 0; i < n; i++) {
         const Vtx_t *s = &src[i].v;
         GfxVtx *r = &REC.v[REC.nv + i];
-        r->x = s->ob[0]; r->y = s->ob[1]; r->z = s->ob[2]; r->w = 1.0f;
+        r->x = s->ob[0]; r->y = s->ob[1]; r->z = s->ob[2];
+        r->w = (float)(REC.cur_pal * GFX_XFORM_ROWS);   /* its palette entry */
         r->s = s->tc[0] * ks;
         r->t = s->tc[1] * kt;
         __builtin_memcpy(&r->r, s->cn, 4);
@@ -1892,6 +1964,13 @@ static void rec_triangle(int i0, int i1, int i2)
             return;
         }
         REC.st[REC.nstate] = R.state;
+        RecCc *cc = &REC.cc[REC.nstate];
+        cc->in = R.cc_in;
+        cc->cc_n = (u8)R.cc_n;
+        cc->texmask = (u8)R.texmask;
+        cc->fog_stage = (s8)R.fog_stage;
+        cc->live = (!(REC.wrote & (1ull << RG_PRIM)) ? 1 : 0) | (!(REC.wrote & (1ull << RG_ENV)) ? 2 : 0) |
+                   (!(REC.wrote & (1ull << RG_FOGC)) ? 4 : 0);
         REC.cur_state = REC.nstate++;
         REC.state_ver = R.state_ver;
     }
@@ -1956,9 +2035,10 @@ static void rec_finish(void)
 {
     rec_drop_overwritten_loads();
     u32 nk = REC.nstate * 2 * sizeof(u64), nst = REC.nstate * sizeof(GfxState),
+        ncc = (REC.nstate * sizeof(RecCc) + 7) & ~7u,
         ns = REC.nseg * sizeof(RecSeg), nx = REC.ntex * 2 * sizeof(u32);
     u32 head = (sizeof(Room) + 7) & ~7u;
-    u32 bytes = head + nk + nst + ns + nx;
+    u32 bytes = head + nk + nst + ncc + ns + nx;
     u32 gvb = REC.nv * sizeof(GfxVtx), gib = REC.ntri * 3 * sizeof(u16);
     GfxVtx *gv = REC.nv ? gfxb_static_alloc(gvb) : NULL;
     u16 *gi = REC.ntri ? gfxb_static_alloc(gib) : NULL;
@@ -1989,6 +2069,7 @@ static void rec_finish(void)
     u8 *p = mem + head;
     rm->key = (u64 (*)[2])p; p += nk;
     rm->st = (GfxState *)p; p += nst;
+    rm->cc = (RecCc *)p; p += ncc;
     rm->seg = (RecSeg *)p; p += ns;
     rm->tex = (u32 (*)[2])p;
     for (int k = 0; k < REC.nstate; k++)
@@ -2002,6 +2083,7 @@ static void rec_finish(void)
             }
         }
     __builtin_memcpy(rm->st, REC.st, nst);
+    __builtin_memcpy(rm->cc, REC.cc, REC.nstate * sizeof(RecCc));
     __builtin_memcpy(rm->seg, REC.seg, ns);
     __builtin_memcpy(rm->tex, REC.tex, nx);
     __builtin_memcpy(rm->tin_tmem, REC.tin_tmem, sizeof rm->tin_tmem);
@@ -2022,6 +2104,10 @@ static void rec_finish(void)
     rm->bytes = bytes;
     rm->nv = REC.nv; rm->ntri = REC.ntri; rm->nseg = REC.nseg; rm->nstate = REC.nstate;
     rm->fog = REC.fog > 0;
+    rm->misses = REC.misses;
+    rm->npal = REC.npal;
+    rm->last_pal = REC.cur_pal;
+    __builtin_memcpy(rm->pal_off, REC.pal_off, sizeof rm->pal_off);
     rm->ntex = REC.ntex;
     rm->ntin = REC.ntin;
     rm->need = REC.need;
@@ -2042,10 +2128,11 @@ static void rec_finish(void)
 
 /* Recorded vertices in clip space, as load_vertices does an unlit load:
  * those triangles need on the CPU (decals, the slots left loaded). */
-static void room_cpu_vertices(const Room *rm, const Xform *xf, const u16 *which, int n, GfxVtx *out)
+static void room_cpu_vertices(const Room *rm, const Xform *pal, const u16 *which, int n, GfxVtx *out)
 {
     for (int i = 0; i < n; i++) {
         const GfxVtx *s = &rm->gv[which[i]];
+        const Xform *xf = &pal[(int)s->w / GFX_XFORM_ROWS];
         GfxVtx *o = &out[i];
         float x = s->x, y = s->y, z = s->z;
         float cw = x * xf->pw[0] + y * xf->pw[1] + z * xf->pw[2] + xf->pw[3];
@@ -2061,17 +2148,60 @@ static void room_cpu_vertices(const Room *rm, const Xform *xf, const u16 *which,
     }
 }
 
+/* A model part's states with the colours as they are now, where they were
+ * the ones found on entry (model.c's tint): the combiner compiled again
+ * (cc_compile memoises), the fog stage's colour replaced. NULL if a
+ * recompiled combiner comes out differently shaped (then the part is
+ * recorded again). */
+static const GfxState *room_live_states(const Room *rm)
+{
+    int dp = R.prim_c != rm->in.prim_c || R.prim_lod != rm->in.prim_lod;
+    int de = R.env_c != rm->in.env_c;
+    int df = R.fog_c != rm->in.fog_c;
+    if (!dp && !de && !df)
+        return rm->st;
+    static GfxState *s_live;
+    if (!s_live && !(s_live = __builtin_malloc(REC_MAX_STATE * sizeof *s_live)))
+        return NULL;
+    for (int k = 0; k < rm->nstate; k++) {
+        GfxState *st = &s_live[k];
+        const RecCc *c = &rm->cc[k];
+        *st = rm->st[k];
+        if (c->cc_n != 0xFF && (((c->live & 1) && dp) || ((c->live & 2) && de))) {
+            CcInput in = c->in;
+            if (c->live & 1) {
+                in.prim = R.prim_c;
+                in.prim_lod = R.prim_lod;
+            }
+            if (c->live & 2)
+                in.env = R.env_c;
+            GfxState tmp;
+            __builtin_memset(&tmp, 0, sizeof tmp);
+            int mask = cc_compile(&in, &tmp);
+            if (tmp.num_stages != c->cc_n || mask != c->texmask)
+                return NULL;
+            __builtin_memcpy(st->stages, tmp.stages, c->cc_n * sizeof tmp.stages[0]);
+            st->buf_update = tmp.buf_update;
+        }
+        if ((c->live & 4) && df && c->fog_stage >= 0)
+            st->stages[c->fog_stage].constant = R.fog_c;
+    }
+    return s_live;
+}
+
 /* Draws a recording; 0 if it doesn't fit the state as it is now (then
  * the list is interpreted). */
 static int room_replay(Room *rm)
 {
+    /* parts take the colours found on entry live (room_live_states) */
+    const u64 live = (rm->tag & PART_BIT) ? (1ull << RG_PRIM) | (1ull << RG_ENV) | (1ull << RG_FOGC) : 0;
     if (rm->pool != s_pool_gen)
         return 0;
     /* what the list read on entry, as it is now */
     if (((R.geom ^ rm->in.geom) & rm->need_bits[0]) || ((R.om_h ^ rm->in.om_h) & rm->need_bits[1]) ||
         ((R.om_l ^ rm->in.om_l) & rm->need_bits[2]))
         return 0;
-    for (u64 n = rm->need; n; n &= n - 1)
+    for (u64 n = rm->need & ~live; n; n &= n - 1)
         if (!group_same(__builtin_ctzll(n), rm))
             return 0;
     for (int i = 0; i < rm->ntin; i++)
@@ -2082,15 +2212,36 @@ static int room_replay(Room *rm)
         for (int u = 0; u < 2; u++)
             if (rm->st[k].tex[u] && !gfxb_tex_check(rm->st[k].tex[u], rm->key[k][u]))
                 return 0;
+    const GfxState *sts = live ? room_live_states(rm) : rm->st;
+    if (!sts)
+        return 0;
     rm->used = s_room_frame;
 
-    const Xform *xf = xf_current();
-    float rows[GFX_XFORM_ROWS][4];
-    for (int k = 0; k < 4; k++) {
-        rows[0][k] = xf->px[k]; rows[1][k] = xf->py[k]; rows[2][k] = xf->pz[k];
-        rows[3][k] = xf->pw[k]; rows[4][k] = xf->mz[k];
+    /* the palette: the current transform, then the model's matrices as
+     * they are now, each with the projection */
+    Xform pal[GFX_XFORM_MAX];
+    pal[0] = *xf_current();
+    Mat last = R.mv[R.mv_top];
+    for (int p = 1; p < rm->npal; p++) {
+        const u32 *src = resolve(0x03000000u | rm->pal_off[p]);
+        if (!src)
+            return 0;
+        Mat m, mvp;
+        mat_from_n64(&m, src);
+        if (p == rm->last_pal)
+            last = m;
+        mat_mul(&mvp, &m, &R.proj);
+        xform_from(&pal[p], &mvp);
     }
-    rows[5][0] = xf->fog_m; rows[5][1] = xf->fog_o; rows[5][2] = rm->fog ? 1.0f : 0.0f; rows[5][3] = 0;
+    const Xform *xf = pal;
+    float rows[GFX_XFORM_MAX * GFX_XFORM_ROWS][4];
+    for (int p = 0; p < rm->npal; p++)
+        for (int k = 0; k < 4; k++) {
+            float (*r)[4] = &rows[p * GFX_XFORM_ROWS];
+            r[0][k] = pal[p].px[k]; r[1][k] = pal[p].py[k]; r[2][k] = pal[p].pz[k];
+            r[3][k] = pal[p].pw[k]; r[4][k] = pal[p].mz[k];
+        }
+    const float fog[4] = { xf->fog_m, xf->fog_o, rm->fog ? 1.0f : 0.0f, 0 };
     int on_gpu = 0;   /* the room's transform is the GPU's (else identity) */
     int decal_seen = 0;   /* s_dv's stamp is this replay's */
 
@@ -2099,7 +2250,7 @@ static int room_replay(Room *rm)
         const RecSeg *sg = &rm->seg[k];
         if (sg->cull == (G_CULL_FRONT | G_CULL_BACK) || !sg->count)
             continue;
-        GfxState st = rm->st[sg->state];
+        GfxState st = sts[sg->state];
         __builtin_memcpy(st.scissor, R.scissor, sizeof R.scissor);
         st.stereo = stereo ? GFX_STEREO_WORLD : GFX_STEREO_FLAT;
         st.stereo_c = stereo ? R.stereo_c : 0.0f;
@@ -2115,7 +2266,7 @@ static int room_replay(Room *rm)
             use_state(&st);
             flush();
             if (!on_gpu) {
-                gfxb_set_xform(rows);
+                gfxb_set_xform(rows, rm->npal, fog);
                 on_gpu = 1;
             }
             s_stats.tris += sg->count;
@@ -2127,7 +2278,7 @@ static int room_replay(Room *rm)
          * transformed once a replay (s_dv, stamped) */
         use_state(&st);
         if (on_gpu) {
-            gfxb_set_xform(NULL);
+            gfxb_set_xform(NULL, 0, NULL);
             on_gpu = 0;
         }
         static GfxVtx *s_dv;
@@ -2176,8 +2327,12 @@ static int room_replay(Room *rm)
         flush();
     }
     if (on_gpu)
-        gfxb_set_xform(NULL);
+        gfxb_set_xform(NULL, 0, NULL);
     room_exit(rm);
+    if (rm->last_pal > 0) {   /* the modelview as the list left it */
+        R.mv[R.mv_top] = last;
+        R.mvp_dirty = 1;
+    }
 
     /* the vertex slots the list left loaded, for what follows it */
     for (int i = 0; i < NUM_VTX; i++) {
@@ -2218,20 +2373,45 @@ static Gfx *room_begin(u32 tag, Gfx *g)
     u32 dl = (u32)(uintptr_t)resolve(g->words.w1);
     if (!dl)
         return g;
-    update_mvp();
+    int misses = 0;
     Room *rm = s_rooms[(tag & 0xFFFF) % ROOM_SLOTS];
     if (rm && rm->tag == tag && rm->dl == dl) {
         if (rm->bad)
             return g;
+        update_mvp();
         if (room_replay(rm)) {
+            if (!(tag & PART_BIT))
+                rm->misses = 0;   /* parts count misses for good (PART_MAX_MISSES) */
             s_rstats.replayed++;
             return g + 1;
         }
         s_rstats.missed++;
+        misses = rm->misses + 1;
     }
-    if (!s_pool_full)
+    update_mvp();
+    if (!s_pool_full) {
         rec_begin(tag, dl);
+        REC.misses = misses;
+        /* a part whose entry state keeps changing in ways not taken live */
+        if ((tag & PART_BIT) && misses >= PART_MAX_MISSES)
+            rec_stop(WHY_UNSTABLE);
+    }
     return g;
+}
+
+/* A model part's tag; g is the command after it, the part's G_DL. */
+static Gfx *part_begin(Gfx *g)
+{
+    if ((g->words.w0 >> 24) != OP(G_DL))
+        return g;
+    const u32 key[] = { g->words.w1, R.seg[4], R.seg[5],   /* SPSEGMENT_MODEL_VTX, _COL1 */
+                        R.om_l, R.om_h, R.geom };          /* model.c's per-instance modes */
+    u32 h = 2166136261u;
+    for (unsigned i = 0; i < sizeof key / sizeof key[0]; i++) {
+        h = (h ^ key[i]) * 16777619u;
+        h ^= h >> 15;
+    }
+    return room_begin(h | PART_BIT, g);
 }
 
 static void room_end(void)
@@ -2297,6 +2477,11 @@ static void run_dl(Gfx *start)
                     room_end();
                 if (g_gfx_debug_enabled && !begin && s_room_t0)
                     pal_prof_add(PAL_PROF_ROOM_DL, pal_ticks() - s_room_t0);
+            } else if ((w0 & 0xFFFFFF) == PART_TAG) {
+                if (w1)
+                    g = part_begin(g);
+                else
+                    room_end();
             } else if ((w0 & 0xFFFFFF) == MENU_TAG) {
                 R.menu = 1;
             } else if ((w0 & 0xFFFFFF) == NEARCLIP_TAG) {

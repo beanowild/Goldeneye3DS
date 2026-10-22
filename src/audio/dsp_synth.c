@@ -672,10 +672,8 @@ void dspsyn_frame(ALSynth *drvr, s16 *outBuf, s32 outLen)
 
 s32 dspsyn_enable(void)
 {
-    char tok[128];
     /* developer token -cpuaudio: the RSP path (asp.c), for comparisons */
-    if (pal_debug_read_text("sdmc:/3ds/ge007/tokens.txt", tok, sizeof tok) > 0 &&
-        __builtin_strstr(tok, "-cpuaudio") != NULL) {
+    if (pal_debug_has_token("-cpuaudio")) {
         pal_log("dsp_synth: off (-cpuaudio)");
         return 0;
     }

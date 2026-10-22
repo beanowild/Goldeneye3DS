@@ -65,7 +65,8 @@ static struct {
     TexMap map;
 } s_memo[8];
 
-static u32 s_texels[MAX_TEXELS];
+extern void *malloc(unsigned int size);   /* the decomp's <stdlib.h> has none */
+static u32 *s_texels;    /* MAX_TEXELS, on the heap: statics must end below 16 MB */
 
 /* Texture keys hash where TMEM's bytes came from rather than the bytes
  * (up to 4 KB a lookup): each load is recorded with its TMEM range and a
@@ -111,6 +112,9 @@ void tex_reset(void)
 {
     static int s_first = 1;
     if (s_first) {   /* tiles start as nothing a command sets */
+        s_texels = malloc(MAX_TEXELS * sizeof *s_texels);
+        if (!s_texels)
+            pal_fatal("no memory for the texture decoder");
         __builtin_memset(s_tile_set, 0xFF, sizeof s_tile_set);
         __builtin_memset(s_tile_size, 0xFF, sizeof s_tile_size);
         s_first = 0;

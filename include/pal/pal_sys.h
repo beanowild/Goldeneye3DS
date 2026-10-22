@@ -146,6 +146,8 @@ int pal_debug_write(const char *path, const void *data, size_t size);
 int pal_debug_read_int(const char *path, int fallback);
 /* A text file's first size - 1 bytes, NUL-terminated: their count, or -1. */
 int pal_debug_read_text(const char *path, char *buf, int size);
+/* Developer token (sdmc:/3ds/ge007/tokens.txt) present? Reads the file. */
+int pal_debug_has_token(const char *token);
 
 /* Show an error and exit. Never returns. */
 void pal_fatal(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
