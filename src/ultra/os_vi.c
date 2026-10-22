@@ -62,11 +62,20 @@ static u64 s_last_vblank_ticks;
 
 /* ---- Retrace (main thread) --------------------------------------------- */
 
+static volatile u32 s_vblanks_total;
+
+/* LCD vblanks since boot (frametiming.c paces Old 3DS frames on them). */
+u32 osPortVblankCount(void)
+{
+    return s_vblanks_total;
+}
+
 void osPortVblank(void)
 {
     pal_os_lock();
 
     s_last_vblank_ticks = pal_ticks();
+    s_vblanks_total++;
 
     /* osViSwapBuffer takes effect at the retrace after it is called. */
     s_fb_current = s_fb_next;

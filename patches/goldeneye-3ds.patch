@@ -24599,7 +24599,7 @@ index 2924c75f..692537d8 100644
    if (((header_check = src[0]) != (*header_alias).unk00) || (src[1] != (*p).unk05))
    {
 diff --git a/src/game/frametiming.c b/src/game/frametiming.c
-index cb8e24a3..547430b9 100644
+index cb8e24a3..a2642c1a 100644
 --- a/src/game/frametiming.c
 +++ b/src/game/frametiming.c
 @@ -26,6 +26,13 @@ u32 copy_of_osgetcount_value_0 = 0;
@@ -24627,7 +24627,7 @@ index cb8e24a3..547430b9 100644
  
      lastFrameCounter = currentFrameCounter;
      currentFrameCounter = (s32) (currentFrameCounter + deltaFrames);
-@@ -72,17 +83,85 @@ void updateFrameCounters(s32 deltaFrames)
+@@ -72,17 +83,108 @@ void updateFrameCounters(s32 deltaFrames)
   * Waits until the appropriate time has passed before updating the frame counters.
   * This function effectively controls the frame rate by waiting for the next tick.
   */
@@ -24644,8 +24644,13 @@ index cb8e24a3..547430b9 100644
 +{
 +    extern int pal_is_new3ds(void);
 +    extern int pal_debug_has_token(const char *token);
++    extern s32 g_StageNum;
 +    if (s_portMin == 0)
 +        s_portMin = pal_is_new3ds() ? 1 : pal_debug_has_token("-fps20") ? 3 : 2;
++    /* the title (intro, menus) steps its animations once a frame whatever
++     * the time (title.c): capped, the Rare logo and gunbarrel crawl */
++    if (g_StageNum == 90 /* LEVELID_TITLE */)
++        return 1;
 +    return s_portMin;
 +}
 +
@@ -24681,6 +24686,24 @@ index cb8e24a3..547430b9 100644
    
 +#ifdef TARGET_3DS
 +  s_portFrameWork(osGetCount() - copy_of_osgetcount_value_1);
++  if (s_portMinFrames() >= 2 && !g_PortFixedStep) {
++    /* Old 3DS: whole LCD refreshes (59.83 Hz), not N64 time. Counting
++     * 2 x 16.55 ms of N64 time let frames come every 31.5 ms against
++     * 33.4 ms of refreshes, so now and then one was shown for a single
++     * refresh (judder). The frame goes as soon as the 2nd (or 3rd) refresh
++     * since the last one has passed, and the game advances by the
++     * refreshes that went by, as at 60 FPS. */
++    extern u32 osPortVblankCount(void);
++    extern void pal_sleep_us(u32 us);
++    static u32 s_lastVb;
++    u32 n;
++    while ((n = osPortVblankCount() - s_lastVb) < s_portMinFrames())
++      pal_sleep_us(500);
++    s_lastVb += n;
++    frameDelay = 1;
++    updateFrameCounters(n);
++    return;
++  }
 +  {
 +    /* sleep through most of the wait instead of spinning: the core goes
 +     * to the game's other threads, and its idle time shows in perf.log */
