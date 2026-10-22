@@ -1524,11 +1524,14 @@ static struct {
     /* On the heap: the executable must end below 16 MB (0x01000000), as
      * higher addresses read as N64 segments (f3d_resolve). */
     u32 (*tex)[2];
+    u16 (*trange)[2];               /* each texture command's TMEM writes: start, end */
     GfxVtx *v;
     u16 *tri;
     RecSeg *seg;
     GfxState *st;
 } REC;
+
+#define TRANGE_NONE 0xFFFFu         /* not a load seen writing TMEM: kept */
 
 static void regs_get(RoomRegs *r)
 {
@@ -1663,6 +1666,18 @@ void f3d_rec_timg_read(void)
 
 void f3d_rec_tmem_load(u32 start, u32 end)
 {
+    /* the bytes a block or palette load writes (tex_cmd), so that loads
+     * the room overwrites entirely needn't be run again after a replay */
+    if (REC.ntex > 0) {
+        u32 op = REC.tex[REC.ntex - 1][0] >> 24;
+        u16 *r = REC.trange[REC.ntex - 1];
+        if ((op == OP(G_LOADBLOCK) || op == OP(G_LOADTLUT)) && r[0] == TRANGE_NONE && end <= 0xFFFF) {
+            r[0] = (u16)start;
+            r[1] = (u16)end;
+        } else {
+            r[0] = TRANGE_NONE;   /* anything else: kept */
+        }
+    }
     for (u32 a = start & ~7u; a < end; a += 8) {
         u32 w = (a >> 3) & (TMEM_DWORDS - 1);
         REC.cov[w >> 5] |= 1u << (w & 31);
@@ -1707,11 +1722,12 @@ static void rec_begin(u32 tag, u32 dl)
         if (s_failed)
             return;
         REC.tex = __builtin_malloc(REC_MAX_TEXCMD * sizeof *REC.tex);
+        REC.trange = __builtin_malloc(REC_MAX_TEXCMD * sizeof *REC.trange);
         REC.v = __builtin_malloc(REC_MAX_V * sizeof *REC.v);
         REC.tri = __builtin_malloc(REC_MAX_TRI * 3 * sizeof *REC.tri);
         REC.seg = __builtin_malloc(REC_MAX_SEG * sizeof *REC.seg);
         REC.st = __builtin_malloc(REC_MAX_STATE * sizeof *REC.st);
-        if (!REC.tex || !REC.v || !REC.tri || !REC.seg || !REC.st) {
+        if (!REC.tex || !REC.trange || !REC.v || !REC.tri || !REC.seg || !REC.st) {
             pal_log("f3d: no memory to record rooms");
             s_failed = 1;
             REC.v = NULL;
@@ -1803,6 +1819,7 @@ static void rec_cmd(u32 w0, u32 w1)
         }
         REC.tex[REC.ntex][0] = w0;
         REC.tex[REC.ntex][1] = w1;
+        REC.trange[REC.ntex][0] = TRANGE_NONE;
         REC.ntex++;
         break;
     case OP(G_SETGEOMETRYMODE): case OP(G_CLEARGEOMETRYMODE): REC.wrote_bits[0] |= w1; break;
@@ -1903,8 +1920,42 @@ static void rec_triangle(int i0, int i1, int i2)
 
 /* The end of the room being recorded: keep the recording, its geometry in
  * the static pool. */
+/* Drops the room's block and palette loads that later loads of its own
+ * overwrite entirely: replayed after the room (room_exit), they leave
+ * TMEM and its load records just as the last ones alone do. */
+static void rec_drop_overwritten_loads(void)
+{
+    u32 covered[TMEM_DWORDS / 32] = { 0 };
+    int n = 0;
+    u8 keep[REC_MAX_TEXCMD];
+    for (int i = REC.ntex - 1; i >= 0; i--) {
+        keep[i] = 1;
+        if (REC.trange[i][0] == TRANGE_NONE)
+            continue;
+        u32 bits[TMEM_DWORDS / 32] = { 0 };
+        for (u32 a = REC.trange[i][0] & ~7u; a < REC.trange[i][1]; a += 8) {
+            u32 w = (a >> 3) & (TMEM_DWORDS - 1);
+            bits[w >> 5] |= 1u << (w & 31);
+        }
+        int new_bytes = 0;
+        for (int k = 0; k < TMEM_DWORDS / 32; k++) {
+            new_bytes |= (bits[k] & ~covered[k]) != 0;
+            covered[k] |= bits[k];
+        }
+        keep[i] = (u8)new_bytes;
+    }
+    for (int i = 0; i < REC.ntex; i++)
+        if (keep[i]) {
+            REC.tex[n][0] = REC.tex[i][0];
+            REC.tex[n][1] = REC.tex[i][1];
+            n++;
+        }
+    REC.ntex = n;
+}
+
 static void rec_finish(void)
 {
+    rec_drop_overwritten_loads();
     u32 nk = REC.nstate * 2 * sizeof(u64), nst = REC.nstate * sizeof(GfxState),
         ns = REC.nseg * sizeof(RecSeg), nx = REC.ntex * 2 * sizeof(u32);
     u32 head = (sizeof(Room) + 7) & ~7u;
@@ -2042,6 +2093,7 @@ static int room_replay(Room *rm)
     }
     rows[5][0] = xf->fog_m; rows[5][1] = xf->fog_o; rows[5][2] = rm->fog ? 1.0f : 0.0f; rows[5][3] = 0;
     int on_gpu = 0;   /* the room's transform is the GPU's (else identity) */
+    int decal_seen = 0;   /* s_dv's stamp is this replay's */
 
     int stereo = R.zmap && R.stereo_c > 0;
     for (int k = 0; k < rm->nseg; k++) {
@@ -2072,17 +2124,36 @@ static int room_replay(Room *rm)
             gfxb_draw_static(rm->gv, t, (int)sg->count * 3);
             continue;
         }
-        /* decals: on the CPU, as triangle() draws them */
+        /* decals: on the CPU, as triangle() draws them, each vertex
+         * transformed once a replay (s_dv, stamped) */
         use_state(&st);
         if (on_gpu) {
             gfxb_set_xform(NULL);
             on_gpu = 0;
         }
+        static GfxVtx *s_dv;
+        static u32 *s_dv_stamp, s_stamp;
+        if (!s_dv) {
+            s_dv = __builtin_malloc(REC_MAX_V * sizeof *s_dv);
+            s_dv_stamp = __builtin_calloc(REC_MAX_V, sizeof *s_dv_stamp);
+            if (!s_dv || !s_dv_stamp)
+                pal_fatal("f3d: no memory for room decals");
+        }
+        if (!decal_seen) {
+            if (++s_stamp == 0) {
+                __builtin_memset(s_dv_stamp, 0, REC_MAX_V * sizeof *s_dv_stamp);
+                s_stamp = 1;
+            }
+            decal_seen = 1;
+        }
         const u32 cull = sg->cull;
         for (u32 n = 0; n < sg->count; n++, t += 3) {
-            GfxVtx v[3];
-            room_cpu_vertices(rm, xf, t, 3, v);
-            const GfxVtx *a = &v[0], *b = &v[1], *c = &v[2];
+            for (int q = 0; q < 3; q++)
+                if (s_dv_stamp[t[q]] != s_stamp) {
+                    room_cpu_vertices(rm, xf, &t[q], 1, &s_dv[t[q]]);
+                    s_dv_stamp[t[q]] = s_stamp;
+                }
+            const GfxVtx *a = &s_dv[t[0]], *b = &s_dv[t[1]], *c = &s_dv[t[2]];
             if (cull && g_gfx_debug_mode != 7) {
                 float area = a->x * (b->y * c->w - b->w * c->y) - a->y * (b->x * c->w - b->w * c->x) +
                              a->w * (b->x * c->y - b->y * c->x);
