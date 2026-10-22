@@ -171,6 +171,11 @@ void *pal_linear_alloc(size_t size, size_t align)
     return linearMemAlign(size, align);
 }
 
+void pal_flush_dcache(const void *p, size_t size)
+{
+    DSP_FlushDataCache(p, size);
+}
+
 _Static_assert(PAL_TICKS_PER_SEC == SYSCLOCK_ARM11, "tick rate mismatch");
 
 uint64_t pal_ticks(void)

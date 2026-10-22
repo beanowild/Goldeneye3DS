@@ -39,6 +39,40 @@ bool     pal_audio_playing(void);    /* at least one buffer pending */
 uint32_t pal_audio_remaining(void);  /* bytes left in the playing buffer */
 uint32_t pal_audio_underruns(void);  /* times the DSP ran dry, since boot */
 
+/*
+ * Hardware voices (src/audio/dsp_synth.c): the game's synthesizer voices
+ * played by DSP channels instead of being mixed on the CPU. The PCM stream
+ * above keeps running alongside them (it carries the reverb return) and
+ * is the clock: each buffer is submitted with the synthesizer sample time
+ * of its first sample (pal_audio_submit_tagged), and voice events are
+ * applied by the DSP frame callback when the stream reaches their time.
+ *
+ * Events are queued from one thread (the game's audio thread).
+ */
+#define PAL_VOICE_COUNT 23      /* DSP channels 1..23; 0 is the stream */
+
+enum {
+    PAL_VOICE_START,    /* pcm/len/loop, rate, gains (no ramp) */
+    PAL_VOICE_STOP,
+    PAL_VOICE_RATE,     /* rate */
+    PAL_VOICE_GAIN,     /* ramp from the current gains to l/r over ramp samples */
+};
+
+typedef struct {
+    uint32_t       time;        /* synthesizer sample time */
+    uint8_t        voice, type;
+    int16_t        loop_count;  /* 0: no loop, -1: forever, n: n extra passes */
+    float          rate;        /* source samples per second */
+    float          l, r;        /* dry gains, 1.0 = unity */
+    uint32_t       ramp;        /* samples */
+    const int16_t *pcm;         /* linear memory (pal_linear_alloc) */
+    uint32_t       len, loop_start, loop_end;
+} PalVoiceEvent;
+
+bool pal_audio_voices_available(void);  /* DSP running */
+void pal_audio_voice_event(const PalVoiceEvent *ev);
+bool pal_audio_submit_tagged(const void *pcm, uint32_t bytes, uint32_t time);
+
 #ifdef __cplusplus
 }
 #endif

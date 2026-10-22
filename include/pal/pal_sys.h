@@ -110,6 +110,8 @@ void pal_os_wait_timeout(int64_t ns);
  * at 0x14000000+ on Old 3DS and 0x30000000+ on New 3DS). Returns NULL on
  * failure. Never freed: used for whole-session arenas. */
 void *pal_linear_alloc(size_t size, size_t align);
+/* Write back the data cache over a range (before the DSP reads it). */
+void pal_flush_dcache(const void *p, size_t size);
 
 /* ---- Time ----------------------------------------------------------- */
 

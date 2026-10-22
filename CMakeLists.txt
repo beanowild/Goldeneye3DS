@@ -102,6 +102,7 @@ if(GE_INTEGRATE)
         src/gfx/f3d_tex.c
         src/gfx/f3d_cc.c
         src/audio/asp.c
+        src/audio/dsp_synth.c
         src/port/bg_swap.c
         src/port/model_swap.c
         src/port/music_stems.c

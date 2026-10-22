@@ -360,7 +360,7 @@ index 3156c9be..54f9ed05 100644
  
  
 diff --git a/src/audi.c b/src/audi.c
-index 511cf31f..7f69e0bb 100644
+index 511cf31f..fe700af7 100644
 --- a/src/audi.c
 +++ b/src/audi.c
 @@ -359,7 +359,7 @@ void amCreateAudioManager(ALSynConfig* alconf)
@@ -372,7 +372,22 @@ index 511cf31f..7f69e0bb 100644
          alconf->params = sp48;
          alInit(&g_AudioManager.g, alconf);
      }
-@@ -553,6 +553,28 @@ void amHandleFrameMessage(AudioInfo *info, AudioInfo *lastInfo)
+@@ -425,6 +425,14 @@ void amMain(void* arg)
+ 	AudioInfo *info = NULL;
+ 
+ 	osScAddClient(&os_scheduler, &g_AudioClient[0], &g_AudioManager.frameMessageQueue, 1);
++#ifdef TARGET_3DS
++	{
++		/* port: synthesizer voices on the DSP from here on (dsp_synth.c);
++		 * offline renders before this point (music_stems.c) use the CPU */
++		extern s32 dspsyn_enable(void);
++		dspsyn_enable();
++	}
++#endif
+ 
+ 	while (!done) {
+ 		osRecvMesg(&g_AudioManager.frameMessageQueue, (OSMesg *) &msg, OS_MESG_BLOCK);
+@@ -553,6 +561,28 @@ void amHandleFrameMessage(AudioInfo *info, AudioInfo *lastInfo)
  }
  
  
@@ -40576,6 +40591,43 @@ index fc2f83aa..7ec4137d 100644
      AL_ADPCM,
      AL_RESAMPLE,
      AL_BUFFER,
+diff --git a/src/libultra/audio/synthesizer.c b/src/libultra/audio/synthesizer.c
+index ca8d6f75..370fa951 100644
+--- a/src/libultra/audio/synthesizer.c
++++ b/src/libultra/audio/synthesizer.c
+@@ -118,6 +118,12 @@ void alSynNew(ALSynth *drvr, ALSynConfig *c)
+         
+         pv->channelKnob   = (ALFilter *)&pv->envmixer;
+     }
++#ifdef TARGET_3DS
++    {
++        extern void dspsyn_register(PVoice *pvoices, s32 n);
++        dspsyn_register(pvoices, c->maxPVoices);
++    }
++#endif
+     
+     alSaveParam(save, AL_FILTER_SET_SOURCE, drvr->mainBus);
+ 
+@@ -200,6 +206,19 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
+ #ifdef AUD_PROFILE
+     PROFILE_AUD(client_num, client_cnt, client_max, client_min);
+ #endif
++#ifdef TARGET_3DS
++    {
++        /* port: voices on the DSP (src/audio/dsp_synth.c), no command list */
++        extern s32 g_PortDspSynth;
++        extern void dspsyn_frame(ALSynth *drvr, s16 *outBuf, s32 outLen);
++        if (g_PortDspSynth) {
++            dspsyn_frame(drvr, outBuf, outLen);
++            *cmdLen = 0;
++            _collectPVoices(drvr);
++            return cmdList;
++        }
++    }
++#endif
+ 
+     /*
+      * Now build the command list in small chunks
 diff --git a/src/libultra/gu/cosf.c b/src/libultra/gu/cosf.c
 index 096a29a3..6587bf4e 100644
 --- a/src/libultra/gu/cosf.c

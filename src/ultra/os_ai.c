@@ -16,6 +16,8 @@
 #include "ultra/os_ai.h"
 #include "ultra/os_sp.h"
 
+extern s32 dspsyn_buffer_time(const void *buf, u32 *time);   /* audio/dsp_synth.c */
+
 /* The AI derives its DAC rate from the VI clock, so the real sample rate
  * is VI_NTSC_CLOCK / round(VI_NTSC_CLOCK / requested). Return that exact
  * value as libultra does; games size their buffers from it. */
@@ -45,6 +47,9 @@ s32 osAiSetNextBuffer(void *bufPtr, u32 size)
     osPortWaitAudioDone();
     /* -1 while both FIFO slots are full, exactly as on hardware; the game
      * retries next frame. */
+    u32 time;
+    if (dspsyn_buffer_time(bufPtr, &time))
+        return pal_audio_submit_tagged(bufPtr, size, time) ? 0 : -1;
     return pal_audio_submit(bufPtr, size) ? 0 : -1;
 }
 
