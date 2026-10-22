@@ -41407,7 +41407,7 @@ index e78a3d82..17f901ce 100644
  
  /**
 diff --git a/src/token.c b/src/token.c
-index b56deb65..fe6c2737 100644
+index b56deb65..be6397cc 100644
 --- a/src/token.c
 +++ b/src/token.c
 @@ -12,7 +12,7 @@
@@ -41450,7 +41450,7 @@ index b56deb65..fe6c2737 100644
      tokenSplit(g_TokenString);
  }
  
-@@ -52,15 +64,48 @@ s32 tokenReadIo(void)
+@@ -52,15 +64,50 @@ s32 tokenReadIo(void)
      u32 address;
      s32 debug = FALSE;
      address = 0xFFB000;
@@ -41488,8 +41488,10 @@ index b56deb65..fe6c2737 100644
      tokenSplit(g_TokenString);
 +#ifdef TARGET_3DS
 +    {
-+        extern int g_gfx_debug_enabled;   /* f3d.c */
-+        g_gfx_debug_enabled = tokenFind(1, "-gfxdbg") != NULL;
++        extern int g_gfx_debug_enabled, g_gfx_debug_keys;   /* f3d.c */
++        /* -gfxtime: the timers alone, without Y (C-left) cycling the modes */
++        g_gfx_debug_keys = tokenFind(1, "-gfxdbg") != NULL;
++        g_gfx_debug_enabled = g_gfx_debug_keys || tokenFind(1, "-gfxtime") != NULL;
 +        if (tokenFind(1, "-gfxmode") != NULL) {
 +            extern int g_gfx_debug_mode;
 +            g_gfx_debug_mode = (s32) strtol(tokenFind(1, "-gfxmode"), NULL, 10);

@@ -952,6 +952,7 @@ static __attribute__((noinline)) int decal_copies(const GfxVtx *a, const GfxVtx 
 }
 
 int g_gfx_debug_enabled, g_gfx_debug_mode;   /* see debug_hidden */
+int g_gfx_debug_keys;   /* Y cycles the modes (-gfxdbg, not -gfxtime) */
 
 /* Developer switch (-gfxdbg token, Y cycles): hide one kind of draw to
  * find which layer misbehaves. 1 decals and XLU (depth_equal), 2 blended,

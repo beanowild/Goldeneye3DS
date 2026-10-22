@@ -57,9 +57,9 @@ void pal_input_update(void)
     u32 held = hidKeysHeld();
     {
         /* developer: Y cycles the renderer's debug modes (f3d.c) */
-        extern int g_gfx_debug_enabled, g_gfx_debug_mode;
+        extern int g_gfx_debug_keys, g_gfx_debug_mode;
         extern void pal_log(const char *fmt, ...);
-        if (g_gfx_debug_enabled && (hidKeysDown() & KEY_Y)) {
+        if (g_gfx_debug_keys && (hidKeysDown() & KEY_Y)) {
             g_gfx_debug_mode = (g_gfx_debug_mode + 1) % 9;
             pal_log("gfx debug mode %d", g_gfx_debug_mode);
         }
