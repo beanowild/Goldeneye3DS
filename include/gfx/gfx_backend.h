@@ -145,6 +145,8 @@ void gfxb_init(void);
 void gfxb_frame_begin(void);
 void gfxb_frame_end(void);
 
+/* st must stay as it is until the next gfxb_set_state (the backend keeps
+ * the pointer, to send only what the next state changes). */
 void gfxb_set_state(const GfxState *st);
 
 /* A triangle list (count is a multiple of 3). */

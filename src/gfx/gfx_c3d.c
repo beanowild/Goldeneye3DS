@@ -70,7 +70,7 @@ static int s_iused;
 static u32 s_ibuf_pa;                 /* s_ibuf's physical address less the buffer base */
 /* What the GPU currently has, so only changed parts are sent again (a
  * texture switch per row-strip rectangle is common). */
-static GfxState s_applied;
+static const GfxState *s_applied;   /* the caller's (gfxb_set_state) */
 static GPU_WRITEMASK s_applied_mask;
 static bool s_applied_valid;
 static u32 s_depth_scale;             /* the depth map (f24): scale, offsets plain/decal */
@@ -428,8 +428,7 @@ void gfxb_frame_begin(void)
     s_neye = 0;
 
     s_applied_valid = false;
-    GfxState none;
-    memset(&none, 0, sizeof none);
+    static const GfxState none;   /* kept: apply_state keeps the pointer */
     apply_state(&none, GPU_WRITE_COLOR);
     gfxb_set_xform(NULL, 0, NULL);
 }
@@ -541,7 +540,7 @@ static bool stage_differs(const GfxState *old, const GfxState *st, int i)
  * start of a frame). */
 static void apply_state(const GfxState *st, GPU_WRITEMASK mask)
 {
-    const GfxState *old = s_applied_valid ? &s_applied : NULL;
+    const GfxState *old = s_applied_valid ? s_applied : NULL;
     /* at most: two textures (8 + 2 words each), the cache clear (2), six
      * stages (6 each), the buffer bits (2), scissor (4), culling (2),
      * effect (12), uniforms (32) */
@@ -664,7 +663,7 @@ static void apply_state(const GfxState *st, GPU_WRITEMASK mask)
     }
     cmd_end(p);
 
-    s_applied = *st;
+    s_applied = st;
     s_applied_mask = mask;
     s_applied_valid = true;
 }
@@ -776,18 +775,28 @@ static void full_quad(uint8_t r, uint8_t g, uint8_t b)
 
 void gfxb_clear_depth(void)
 {
-    GfxState st = { .depth_test = false, .depth_write = true, .shade = true }, keep = s_applied;
+    GfxState st = { .depth_test = false, .depth_write = true, .shade = true };
+    const GfxState *keep = s_applied;
+    bool valid = s_applied_valid;
     apply_state(&st, 0);
     full_quad(0, 0, 0);
-    apply_state(&keep, GPU_WRITE_COLOR);
+    if (valid)
+        apply_state(keep, GPU_WRITE_COLOR);
+    else
+        s_applied_valid = false;
 }
 
 void gfxb_clear_color(uint8_t r, uint8_t g, uint8_t b)
 {
-    GfxState st = { .shade = true }, keep = s_applied;
+    GfxState st = { .shade = true };
+    const GfxState *keep = s_applied;
+    bool valid = s_applied_valid;
     apply_state(&st, GPU_WRITE_COLOR);
     full_quad(r, g, b);
-    apply_state(&keep, GPU_WRITE_COLOR);
+    if (valid)
+        apply_state(keep, GPU_WRITE_COLOR);
+    else
+        s_applied_valid = false;
 }
 
 /* ---- Texture cache --------------------------------------------------------- */

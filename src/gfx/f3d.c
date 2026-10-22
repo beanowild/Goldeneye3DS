@@ -57,6 +57,7 @@ extern int g_gfx_debug_enabled, g_gfx_debug_mode;   /* developer switches, below
  * cutscenes (30) and the logos (100).
  * Projections starting at STEREO_FLAT_NEAR or beyond are drawn flat: the
  * watch (1000), which must stay under its text. */
+#define batch_state bs[R.bsi]   /* R.batch_state: the state being batched */
 #define STEREO_CONV      20.0f
 #define STEREO_CONV_NEAR 1.5f
 #define STEREO_FLAT_NEAR 500.0f
@@ -132,7 +133,8 @@ static struct {
     u32 cimg, zimg;
     u16 scissor[4];         /* GfxState's: top-screen pixels, all 0 = none */
 
-    GfxState batch_state;
+    GfxState bs[2];             /* the batch's state: bs[bsi] (gfxb_set_state keeps it) */
+    int bsi;
     u16 batch[BATCH_INDICES];   /* triangles, as GPU vertex indices */
     int batch_n;
 } R;
@@ -393,6 +395,12 @@ static void menu_layer(GfxState *t)
     }
 }
 
+/* Where use_state wants the next state: building one there saves a copy. */
+static GfxState *state_scratch(void)
+{
+    return &R.bs[R.bsi ^ 1];
+}
+
 static void use_state(const GfxState *st)
 {
     R.state_live = 0;
@@ -405,8 +413,11 @@ static void use_state(const GfxState *st)
     if (state_differs(st, &R.batch_state)) {
         flush();
         s_stats.changes++;
-        R.batch_state = *st;
-        gfxb_set_state(st);
+        GfxState *n = &R.bs[R.bsi ^ 1];
+        if (st != n)
+            *n = *st;
+        R.bsi ^= 1;
+        gfxb_set_state(n);
     }
 }
 
@@ -2291,7 +2302,10 @@ static int room_replay(Room *rm)
         const RecSeg *sg = &rm->seg[k];
         if (sg->cull == (G_CULL_FRONT | G_CULL_BACK) || !sg->count)
             continue;
-        GfxState st = sts[sg->state];
+        /* built where use_state keeps it (no copy) unless the menu layers it */
+        GfxState local, *stp = R.menu ? &local : state_scratch();
+#define st (*stp)
+        st = sts[sg->state];
         __builtin_memcpy(st.scissor, R.scissor, sizeof R.scissor);
         st.stereo = stereo ? GFX_STEREO_WORLD : GFX_STEREO_FLAT;
         st.stereo_c = stereo ? R.stereo_c : 0.0f;
@@ -2318,6 +2332,7 @@ static int room_replay(Room *rm)
         /* decals: on the CPU, as triangle() draws them, each vertex
          * transformed once a replay (s_dv, stamped) */
         use_state(&st);
+#undef st
         if (on_gpu) {
             gfxb_set_xform(NULL, 0, NULL);
             on_gpu = 0;
@@ -2858,6 +2873,7 @@ static u64 f3d_task_run(OSTask *task)
     s_rdp.n = 0;
     __builtin_memset(R.scissor, 0, sizeof R.scissor);
     __builtin_memset(&R.batch_state, 0xFF, sizeof R.batch_state);   /* force the first set */
+    __builtin_memset(&R.bs[R.bsi ^ 1], 0xFF, sizeof R.bs[0]);
     R.dirty = 1;
     R.state_live = 0;
     for (int i = 0; i < NUM_VTX; i++)   /* GPU indices from the last task are stale */
