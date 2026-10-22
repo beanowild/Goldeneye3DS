@@ -179,6 +179,22 @@ void portMusicStems(void)
     for (int c = 0; c < 16; c++)
         inst[c] = instrument_index(c);
 
+    /* developer token -audiocheck: the mix again through audio/dsp_synth.c,
+     * every voice mixed in software as the DSP would play it, to compare
+     * with the mix above sample for sample; then stop */
+    {
+        extern int pal_debug_has_token(const char *token);
+        extern s32 g_PortDspSynth, g_PortDspSoft;
+        if (pal_debug_has_token("-audiocheck")) {
+            g_PortDspSynth = g_PortDspSoft = 1;
+            put(put2(put(name, "track"), track), "_dspmix");
+            render(name, track, 0, seconds, rate, frame);
+            g_PortDspSynth = g_PortDspSoft = 0;
+            pal_log("stems: done");
+            return;
+        }
+    }
+
     for (int c = 0; c < 16; c++) {
         if (!(used & (1 << c)))
             continue;

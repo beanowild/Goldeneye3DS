@@ -43,6 +43,7 @@ extern void *calloc(unsigned int n, unsigned int size);
 #define CHUNK       AL_MAX_RSP_SAMPLES  /* reverb block, as the N64 */
 
 s32 g_PortDspSynth;     /* alAudioFrame takes the DSP path */
+s32 g_PortDspSoft;      /* every voice mixed on the CPU, no DSP (music_stems.c -audiocheck) */
 
 /* ---- Decoded wavetables ---------------------------------------------------- */
 
@@ -405,51 +406,130 @@ static void voice_event(ALSynth *drvr, int i, SVoice *v, ALParam *p, u32 t)
     }
 }
 
+/* After stepping: back into the loop, or stopped at the end. */
+static int voice_wrap(SVoice *v, u32 len)
+{
+    while (v->count != 0 && v->pos >= v->le) {
+        v->pos -= v->le - v->ls;
+        if (v->count > 0)
+            v->count--;
+    }
+    if (v->pos >= len) {
+        v->playing = 0;
+        return 0;
+    }
+    return 1;
+}
+
+/* Advance a voice that sends nothing to the CPU's mix. */
+static void voice_skip(SVoice *v, s32 n)
+{
+    u32 step = v->unity ? 0x10000 : v->step;
+    u64 adv = (u64)v->frac + (u64)step * (u32)n;
+    v->frac = (u32)(adv & 0xFFFF);
+    u64 pos = (u64)v->pos + (adv >> 16);
+    if (v->count != 0 && pos >= v->le) {
+        u64 span = v->le - v->ls;
+        u64 over = pos - v->le;
+        u64 passes = over / span + 1;
+        if (v->count > 0 && passes > (u64)v->count) {
+            pos = v->le + (pos - v->le) - (u64)v->count * span;   /* past the loop: the tail */
+            v->count = 0;
+        } else {
+            pos -= passes * span;
+            if (v->count > 0)
+                v->count -= (s32)passes;
+        }
+    }
+    if (pos >= v->wave->n) {
+        v->playing = 0;
+        return;
+    }
+    v->pos = (u32)pos;
+}
+
 /* Advance a voice over [t, t + n) output samples, adding its reverb send
- * (and, for the CPU voice, its dry output) at offset off of the frame. */
+ * (and, for the CPU voice, its dry output) at offset off of the frame.
+ * Gains are taken every 16 samples (the envelope is a ramp); between loop
+ * points the inner loop has no other tests. */
 static void voice_run(int i, SVoice *v, u32 t, s32 off, s32 n)
 {
     if (!v->playing || n <= 0)
         return;
+    int dry = i == CPU_VOICE || g_PortDspSoft;
+    if (!dry && v->wet <= 0.0f) {
+        voice_skip(v, n);
+        return;
+    }
     const s16 *pcm = v->wave->pcm;
     u32 len = v->wave->n;
     u32 step = v->unity ? 0x10000 : v->step;
-    int dry = i == CPU_VOICE;
-    int wet = v->wet > 0.0f;
 
-    for (s32 k = 0; k < n; k += 16) {
+    for (s32 k = 0; k < n; ) {
         s32 m = n - k < 16 ? n - k : 16;
         u32 tm = t + k + m / 2;
         f32 el = env_at(v, 0, tm) * GAIN_SCALE, er = env_at(v, 1, tm) * GAIN_SCALE;
         /* the N64 sums the aux pair at 0.707 each into the reverb input */
-        s32 gw = wet ? (s32)((el + er) * v->wet * 0.70710678f * 4096.0f) : 0;
-        s32 gl = dry ? (s32)(el * v->dry * 4096.0f) : 0;
-        s32 gr = dry ? (s32)(er * v->dry * 4096.0f) : 0;
-        for (s32 j = 0; j < m; j++) {
+        s32 gw = (s32)((el + er) * v->wet * 0.70710678f * 4096.0f);
+        s32 gl = (s32)(el * v->dry * 4096.0f), gr = (s32)(er * v->dry * 4096.0f);
+        /* samples before the position needs a loop or end check: the
+         * interpolation reads pos + 1, so stop one short of the limit */
+        u32 lim = v->count != 0 ? v->le : len;
+        if (v->pos + 1 >= lim) {
+            /* the slow path, one sample */
             u32 p1 = v->pos + 1;
             if (v->count != 0 && p1 >= v->le)
                 p1 = v->ls;
-            s32 a = pcm[v->pos], b = p1 < len ? pcm[p1] : 0;
-            s32 s = a + (((b - a) * (s32)(v->frac >> 1)) >> 15);
-            s32 o = off + k + j;
-            s_mono[o] += (s * gw) >> 12;
+            s32 a0 = pcm[v->pos], b0 = p1 < len ? pcm[p1] : 0;
+            s32 smp = a0 + (((b0 - a0) * (s32)(v->frac >> 1)) >> 15);
+            s32 o = off + k;
+            s_mono[o] += (smp * gw) >> 12;
             if (dry) {
-                s_dry[0][o] += (s * gl) >> 12;
-                s_dry[1][o] += (s * gr) >> 12;
+                s_dry[0][o] += (smp * gl) >> 12;
+                s_dry[1][o] += (smp * gr) >> 12;
             }
-            v->frac += step;
-            v->pos += v->frac >> 16;
-            v->frac &= 0xFFFF;
-            while (v->count != 0 && v->pos >= v->le) {
-                v->pos -= v->le - v->ls;
-                if (v->count > 0)
-                    v->count--;
+            m = 1;
+        } else {
+            /* how many fit before pos + 1 reaches lim */
+            u32 room = lim - 1 - v->pos;     /* whole samples of headroom */
+            u64 can = step ? (((u64)room << 16) - v->frac - 1) / step + 1 : (u64)m;
+            if ((u64)m > can)
+                m = (s32)can;
+            s32 *wo = &s_mono[off + k];
+            u32 pos = v->pos, frac = v->frac;
+            if (dry) {
+                s32 *dl = &s_dry[0][off + k], *dr = &s_dry[1][off + k];
+                for (s32 j = 0; j < m; j++) {
+                    s32 a0 = pcm[pos], smp = a0 + (((pcm[pos + 1] - a0) * (s32)(frac >> 1)) >> 15);
+                    wo[j] += (smp * gw) >> 12;
+                    dl[j] += (smp * gl) >> 12;
+                    dr[j] += (smp * gr) >> 12;
+                    frac += step;
+                    pos += frac >> 16;
+                    frac &= 0xFFFF;
+                }
+            } else {
+                for (s32 j = 0; j < m; j++) {
+                    s32 a0 = pcm[pos], smp = a0 + (((pcm[pos + 1] - a0) * (s32)(frac >> 1)) >> 15);
+                    wo[j] += (smp * gw) >> 12;
+                    frac += step;
+                    pos += frac >> 16;
+                    frac &= 0xFFFF;
+                }
             }
-            if (v->pos >= len) {
-                v->playing = 0;
+            v->pos = pos;
+            v->frac = frac;
+            k += m;
+            if (!voice_wrap(v, len))
                 return;
-            }
+            continue;
         }
+        v->frac += step;
+        v->pos += v->frac >> 16;
+        v->frac &= 0xFFFF;
+        k += m;
+        if (!voice_wrap(v, len))
+            return;
     }
 }
 
@@ -458,7 +538,7 @@ static void voice_run(int i, SVoice *v, u32 t, s32 off, s32 n)
 
 static void send(PalVoiceEvent *ev)
 {
-    if (ev->voice >= PAL_VOICE_COUNT)
+    if (ev->voice >= PAL_VOICE_COUNT || g_PortDspSoft)
         return;     /* the CPU voice */
     if (s_evn == EVQ_SIZE) {
         pal_audio_voice_event(&s_evq[0]);   /* full: flush the oldest */
@@ -509,20 +589,24 @@ static s32 wrap(const ALFx *r, s32 idx)
 static void load(const ALFx *r, s32 idx, s16 *dst, s32 n)
 {
     idx = wrap(r, idx);
-    for (s32 i = 0; i < n; i++) {
-        dst[i] = r->base[idx];
-        if (++idx == (s32)r->length)
-            idx = 0;
+    s32 first = (s32)r->length - idx;
+    if (first >= n) {
+        __builtin_memcpy(dst, r->base + idx, n * sizeof *dst);
+    } else {
+        __builtin_memcpy(dst, r->base + idx, first * sizeof *dst);
+        __builtin_memcpy(dst + first, r->base, (n - first) * sizeof *dst);
     }
 }
 
 static void save(ALFx *r, s32 idx, const s16 *src, s32 n)
 {
     idx = wrap(r, idx);
-    for (s32 i = 0; i < n; i++) {
-        r->base[idx] = src[i];
-        if (++idx == (s32)r->length)
-            idx = 0;
+    s32 first = (s32)r->length - idx;
+    if (first >= n) {
+        __builtin_memcpy(r->base + idx, src, n * sizeof *src);
+    } else {
+        __builtin_memcpy(r->base + idx, src, first * sizeof *src);
+        __builtin_memcpy(r->base, src + first, (n - first) * sizeof *src);
     }
 }
 

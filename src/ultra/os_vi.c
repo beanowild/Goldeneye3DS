@@ -155,6 +155,9 @@ void osPortVblank(void)
                              (double)(pr[PAL_PROF_SKY] * ms / g), (double)(pr[PAL_PROF_PORTALS] * ms / g),
                              (double)(pr[PAL_PROF_PROPSTICK] * ms / g), (double)(pr[PAL_PROF_ROOM_DL] * ms / g));
             if (g_gfx_debug_enabled)
+                pal_perf_log("ge007: core 0/frame: main thread %.2f ms (lvlRender in it), audio frame %.2f ms (DSP synth part %.2f)",
+                             (double)(pr[PAL_PROF_MAINTICK] * ms / g), (double)(pr[PAL_PROF_AUDIOFRAME] * ms / g), (double)(pr[PAL_PROF_DSPSYN] * ms / g));
+            if (g_gfx_debug_enabled)
                 pal_perf_log("ge007: propsTick/frame: chr %.2f (AI %.2f, bone mtx %.2f), obj %.2f, player %.2f ms",
                              (double)(pr[PAL_PROF_CHRTICK] * ms / g), (double)(pr[PAL_PROF_CHRAI] * ms / g),
                              (double)(pr[PAL_PROF_CHRMTX] * ms / g), (double)(pr[PAL_PROF_OBJTICK] * ms / g),

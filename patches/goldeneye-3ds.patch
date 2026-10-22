@@ -1346,10 +1346,20 @@ index 53fd4fa5..16c16a96 100644
 +
  #endif
 diff --git a/src/boss.c b/src/boss.c
-index bfad266f..9b6746f4 100644
+index bfad266f..c5ec30fb 100644
 --- a/src/boss.c
 +++ b/src/boss.c
-@@ -214,8 +214,20 @@ void bossInitMainthreadData(void)
+@@ -39,6 +39,9 @@
+ #include "game/player.h"
+ #include "game/frametiming.h"
+ #include "PR/R4300.h"
++#ifdef TARGET_3DS
++static unsigned long long g_PortMainTick0;
++#endif
+ 
+ /**
+  * @file boss.c
+@@ -214,8 +217,20 @@ void bossInitMainthreadData(void)
          g_CurentMMallocValue = (s32) (strtol(tokenFind(1, "-m"), 0, 0) << 0xa);
      }
  
@@ -1370,7 +1380,7 @@ index bfad266f..9b6746f4 100644
      mempResetBank(MEMPOOL_PERMANENT);
      langInit();
      lvInit();
-@@ -355,6 +367,18 @@ void bossMainloop(void)
+@@ -355,6 +370,18 @@ void bossMainloop(void)
      }
  
      nowCount = osGetCount();
@@ -1389,6 +1399,35 @@ index bfad266f..9b6746f4 100644
      randomSetSeed(nowCount);
  
      // 'done' value never changes, and control never breaks -- infinite loop
+@@ -486,6 +513,14 @@ void bossMainloop(void)
+                                 waitForNextFrame();
+                             }
+ 
++#ifdef TARGET_3DS
++                            {
++                                /* developer timer (-gfxdbg): the frame's work on the main thread */
++                                extern int g_gfx_debug_enabled;
++                                extern unsigned long long pal_ticks(void);
++                                g_PortMainTick0 = g_gfx_debug_enabled ? pal_ticks() : 0;
++                            }
++#endif
+                             speedgraphRenderGraph();
+                             speedgraphMarkerCommit();
+                             speedgraphMarkerHandler(0x20000);
+@@ -581,6 +616,13 @@ void bossMainloop(void)
+                             }
+ 
+                             freeGfx = dynGetFreeGfx2(gdl);
++#ifdef TARGET_3DS
++                            if (g_PortMainTick0) {
++                                extern unsigned long long pal_ticks(void);
++                                extern void pal_prof_add(int id, unsigned long long ticks);
++                                pal_prof_add(25 /* PAL_PROF_MAINTICK */, pal_ticks() - g_PortMainTick0);
++                            }
++#endif
+                             dynSwapBuffers();
+                             video_related_8();
+ 
 diff --git a/src/crash.c b/src/crash.c
 index 3a62ec19..25e83516 100644
 --- a/src/crash.c
@@ -40688,7 +40727,7 @@ index fc2f83aa..7ec4137d 100644
      AL_RESAMPLE,
      AL_BUFFER,
 diff --git a/src/libultra/audio/synthesizer.c b/src/libultra/audio/synthesizer.c
-index ca8d6f75..370fa951 100644
+index ca8d6f75..bd28ee42 100644
 --- a/src/libultra/audio/synthesizer.c
 +++ b/src/libultra/audio/synthesizer.c
 @@ -118,6 +118,12 @@ void alSynNew(ALSynth *drvr, ALSynConfig *c)
@@ -40704,7 +40743,30 @@ index ca8d6f75..370fa951 100644
      
      alSaveParam(save, AL_FILTER_SET_SOURCE, drvr->mainBus);
  
-@@ -200,6 +206,19 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
+@@ -140,6 +146,11 @@ void alSynNew(ALSynth *drvr, ALSynConfig *c)
+  * frame interrupt. It is assumed to be an accurate time source for the
+  * clients.
+  */
++#ifdef TARGET_3DS
++extern unsigned long long pal_ticks(void);
++extern void pal_prof_add(int id, unsigned long long ticks);
++extern int g_gfx_debug_enabled;
++#endif
+ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
+ {
+     ALPlayer    *client;
+@@ -155,6 +166,10 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
+     lastCnt[++cnt_index] = osGetCount();
+ #endif
+     
++#ifdef TARGET_3DS
++    /* developer timer (-gfxdbg): the whole audio frame */
++    unsigned long long s_port_t0 = g_gfx_debug_enabled ? pal_ticks() : 0;
++#endif
+     if (drvr->head == 0) {
+ 	*cmdLen = 0;
+         return cmdList;         /* nothing to do */
+@@ -200,6 +215,24 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
  #ifdef AUD_PROFILE
      PROFILE_AUD(client_num, client_cnt, client_max, client_min);
  #endif
@@ -40714,7 +40776,12 @@ index ca8d6f75..370fa951 100644
 +        extern s32 g_PortDspSynth;
 +        extern void dspsyn_frame(ALSynth *drvr, s16 *outBuf, s32 outLen);
 +        if (g_PortDspSynth) {
++            unsigned long long t1 = s_port_t0 ? pal_ticks() : 0;
 +            dspsyn_frame(drvr, outBuf, outLen);
++            if (s_port_t0) {
++                pal_prof_add(26 /* PAL_PROF_AUDIOFRAME */, pal_ticks() - s_port_t0);
++                pal_prof_add(27 /* PAL_PROF_DSPSYN */, pal_ticks() - t1);
++            }
 +            *cmdLen = 0;
 +            _collectPVoices(drvr);
 +            return cmdList;
