@@ -1553,6 +1553,11 @@ typedef struct {
     int npal, last_pal;
     u32 pal_off[GFX_XFORM_MAX];
     int misses;                     /* recorded again after not fitting (rooms: in a row) */
+    /* What the texture commands left by room_exit write (exit_summary):
+     * tiles' descriptors and sizes, the image, TMEM in 8-byte granules. */
+    u8 xs_state;                    /* 0 not worked out, 1 known, 2 unknown */
+    u8 xs_desc, xs_size, xs_timg;
+    u64 xs_tmem[8];
 } Room;
 
 static Room *s_rooms[ROOM_SLOTS];
@@ -1630,8 +1635,138 @@ static int group_same(int g, const Room *rm)
     return R.seg[g - RG_SEG0] == r->seg[g - RG_SEG0];
 }
 
+/* ---- Deferred room exits ----------------------------------------------
+ *
+ * A replayed room's texture commands (tiles, image, TMEM loads) are run
+ * again on exit so what follows finds them as the list left them. Rooms
+ * mostly follow each other without anything reading that state, so the
+ * exits wait in a chain (g_tex_deferred makes f3d_tex.c's entry points
+ * call f3d_exits_flush first). On a flush, a room whose writes the rooms
+ * after it in the chain all overwrite is skipped: the end state is the
+ * same. */
+#define EXIT_CHAIN 64
+#define TMEM_BYTES 4096
+static Room *s_exit[EXIT_CHAIN];
+static int s_nexit;
+int g_tex_deferred;
+
+static void tmem_mark(u64 g[8], u32 s0, u32 e0)
+{
+    for (u32 a = s0; a < e0; a += 8) {
+        u32 k = (a & (TMEM_BYTES - 1)) >> 3;
+        g[k >> 6] |= 1ull << (k & 63);
+    }
+}
+
+/* Works out the summary from the commands, as f3d_tex.c's loads place
+ * their bytes; unknown if a load uses a tile or image the room didn't set. */
+static void exit_summary(Room *rm)
+{
+    u32 tmem[8], line[8], siz = 0;
+    u8 tile_set = 0, timg_set = 0;
+    rm->xs_desc = rm->xs_size = rm->xs_timg = 0;
+    __builtin_memset(rm->xs_tmem, 0, sizeof rm->xs_tmem);
+    rm->xs_state = 1;
+    for (int i = 0; i < rm->ntex; i++) {
+        u32 w0 = rm->tex[i][0], w1 = rm->tex[i][1];
+        int t = (w1 >> 24) & 7;
+        u32 op = w0 >> 24;
+        if (op == OP(G_SETTIMG)) {
+            siz = (w0 >> 19) & 3;
+            timg_set = rm->xs_timg = 1;
+        } else if (op == OP(G_SETTILE)) {
+            tmem[t] = w0 & 0x1FF;
+            line[t] = (w0 >> 9) & 0x1FF;
+            tile_set |= 1 << t;
+            rm->xs_desc |= 1 << t;
+        } else if (op == OP(G_SETTILESIZE)) {
+            rm->xs_size |= 1 << t;
+        } else if (op == OP(G_LOADBLOCK) || op == OP(G_LOADTILE) || op == OP(G_LOADTLUT)) {
+            if (!(tile_set & (1 << t)) || !timg_set) {
+                rm->xs_state = 2;
+                return;
+            }
+            u32 base = tmem[t] * 8, s0 = base, e0;
+            u32 uls = (w0 >> 12) & 0xFFF, ult = w0 & 0xFFF, lrs = (w1 >> 12) & 0xFFF, lrt = w1 & 0xFFF;
+            if (op == OP(G_LOADBLOCK)) {
+                if (lrs < uls)
+                    continue;
+                u32 n = lrs - uls + 1, span = siz == G_IM_SIZ_32b ? n * 4 : (n << siz) >> 1;
+                s0 = siz == G_IM_SIZ_32b ? 0 : base;
+                e0 = siz == G_IM_SIZ_32b ? TMEM_BYTES : base + ((span + 7) & ~7u);
+            } else if (op == OP(G_LOADTILE)) {
+                uls >>= 2; ult >>= 2; lrs >>= 2; lrt >>= 2;
+                if (lrs < uls || lrt < ult)
+                    continue;
+                rm->xs_size |= 1 << t;
+                s0 = siz == G_IM_SIZ_32b ? 0 : base;
+                e0 = siz == G_IM_SIZ_32b ? TMEM_BYTES
+                   : base + (lrt - ult) * line[t] * 8 + ((((lrs - uls + 1) << siz) >> 1) + 7) / 8 * 8;
+            } else {
+                uls >>= 2; lrs >>= 2;
+                if (lrs < uls)
+                    continue;
+                u32 count = lrs - uls + 1;
+                e0 = base + (count > 256 ? 256 : count) * 8;
+            }
+            if (e0 > s0 + TMEM_BYTES)
+                e0 = s0 + TMEM_BYTES;
+            tmem_mark(rm->xs_tmem, s0, e0);
+        }
+    }
+}
+
+static void exit_tex(const Room *rm)
+{
+    for (int i = 0; i < rm->ntex; i++) {
+        u32 w0 = rm->tex[i][0], w1 = rm->tex[i][1];
+        switch (w0 >> 24) {
+        case OP(G_SETTIMG): tex_settimg(w0, w1); break;
+        case OP(G_SETTILE): tex_settile(w0, w1); break;
+        case OP(G_SETTILESIZE): tex_settilesize(w0, w1); break;
+        case OP(G_LOADBLOCK): tex_loadblock(w0, w1); break;
+        case OP(G_LOADTILE): tex_loadtile(w0, w1); break;
+        case OP(G_LOADTLUT): tex_loadtlut(w0, w1); break;
+        }
+    }
+}
+
+void f3d_exits_flush(void)
+{
+    int n = s_nexit;
+    s_nexit = 0;
+    g_tex_deferred = 0;
+    if (n == 0)
+        return;
+    u8 skip[EXIT_CHAIN];
+    u8 desc = 0, size = 0, timg = 0;
+    u64 cov[8] = { 0 };
+    for (int i = n - 1; i >= 0; i--) {
+        Room *rm = s_exit[i];
+        if (!rm->xs_state)
+            exit_summary(rm);
+        skip[i] = 0;
+        if (rm->xs_state != 1)
+            continue;   /* run, and its writes covering nothing */
+        if (i < n - 1 && !(rm->xs_desc & ~desc) && !(rm->xs_size & ~size) && (!rm->xs_timg || timg)) {
+            int covered = 1;
+            for (int k = 0; k < 8 && covered; k++)
+                covered = !(rm->xs_tmem[k] & ~cov[k]);
+            skip[i] = (u8)covered;
+        }
+        desc |= rm->xs_desc;
+        size |= rm->xs_size;
+        timg |= rm->xs_timg;
+        for (int k = 0; k < 8; k++)
+            cov[k] |= rm->xs_tmem[k];
+    }
+    for (int i = 0; i < n; i++)
+        if (!skip[i])
+            exit_tex(s_exit[i]);
+}
+
 /* Leaves the registers as the room's list did. */
-static void room_exit(const Room *rm)
+static void room_exit(Room *rm)
 {
     const RoomRegs *r = &rm->out;
     u64 w = rm->wrote;
@@ -1654,17 +1789,12 @@ static void room_exit(const Room *rm)
     for (int i = 0; i < 16; i++)
         if (w & (1ull << (RG_SEG0 + i)))
             R.seg[i] = r->seg[i];
-    /* tiles, the image and TMEM: the room's commands again */
-    for (int i = 0; i < rm->ntex; i++) {
-        u32 w0 = rm->tex[i][0], w1 = rm->tex[i][1];
-        switch (w0 >> 24) {
-        case OP(G_SETTIMG): tex_settimg(w0, w1); break;
-        case OP(G_SETTILE): tex_settile(w0, w1); break;
-        case OP(G_SETTILESIZE): tex_settilesize(w0, w1); break;
-        case OP(G_LOADBLOCK): tex_loadblock(w0, w1); break;
-        case OP(G_LOADTILE): tex_loadtile(w0, w1); break;
-        case OP(G_LOADTLUT): tex_loadtlut(w0, w1); break;
-        }
+    /* tiles, the image and TMEM: the room's commands again, deferred */
+    if (rm->ntex) {
+        if (s_nexit == EXIT_CHAIN)
+            f3d_exits_flush();
+        s_exit[s_nexit++] = rm;
+        g_tex_deferred = 1;
     }
     R.dirty = 1;
     R.state_live = 0;
@@ -1675,6 +1805,8 @@ static void lazy_flush(void);
 
 static void room_free(int i)
 {
+    if (s_nexit)
+        f3d_exits_flush();   /* the chain points at rooms */
     if (s_rooms[i] && s_rooms[i] == s_lazy_rm)
         lazy_flush();
     if (s_rooms[i]) {
@@ -1785,6 +1917,7 @@ void f3d_rec_tmem_read(u32 start, u32 len)
 
 static void rec_begin(u32 tag, u32 dl)
 {
+    f3d_exits_flush();   /* a recording sees the state as it is */
     if (!REC.v) {
         static int s_failed;
         if (s_failed)
@@ -2892,6 +3025,8 @@ static u64 f3d_task_run(OSTask *task)
     R.state_live = 0;
     for (int i = 0; i < NUM_VTX; i++)   /* GPU indices from the last task are stale */
         R.vtx[i].idx = -1;
+    s_nexit = 0;   /* flushed at the last task's end */
+    g_tex_deferred = 0;
     tex_reset();
 
     __builtin_memset(&s_stats, 0, sizeof s_stats);

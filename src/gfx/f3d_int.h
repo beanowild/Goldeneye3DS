@@ -67,6 +67,12 @@ typedef struct {
     float inv_w, inv_h;
 } TexMap;
 
+/* Room exits waiting to be run (f3d.c): f3d_tex.c's entry points run
+ * them first, through TEX_SYNC. */
+extern int g_tex_deferred;
+void f3d_exits_flush(void);
+#define TEX_SYNC() do { if (__builtin_expect(g_tex_deferred, 0)) f3d_exits_flush(); } while (0)
+
 void tex_reset(void);
 void tex_task_end(void);   /* finish deferred TMEM loads */
 void tex_settimg(u32 w0, u32 w1);

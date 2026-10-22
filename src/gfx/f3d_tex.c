@@ -234,6 +234,7 @@ static u64 region_key(u64 h, u32 start, u32 len)
 
 void tex_settimg(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     s_timg.fmt = (w0 >> 21) & 7;
     s_timg.siz = (w0 >> 19) & 3;
     s_timg.width = (w0 & 0xFFF) + 1;
@@ -242,6 +243,7 @@ void tex_settimg(u32 w0, u32 w1)
 
 int tex_settile(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     int i = (w1 >> 24) & 7;
     w0 &= 0x00FFFFFF;
     if (s_tile_set[i][0] == w0 && s_tile_set[i][1] == w1)
@@ -266,6 +268,7 @@ int tex_settile(u32 w0, u32 w1)
 
 int tex_settilesize(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     int i = (w1 >> 24) & 7;
     w0 &= 0x00FFFFFF;
     w1 &= 0x00FFFFFF;
@@ -412,6 +415,7 @@ static void push_pending(const PendingLoad *p)
 
 void tex_task_end(void)
 {
+    TEX_SYNC();
     tex_materialize();
 }
 
@@ -428,6 +432,7 @@ static void pending_range(PendingLoad *p, u32 s0, u32 e0)
 
 int tex_loadblock(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     Tile *t = &s_tile[(w1 >> 24) & 7];
     u32 uls = (w0 >> 12) & 0xFFF, ult = w0 & 0xFFF;
     u32 lrs = (w1 >> 12) & 0xFFF, dxt = w1 & 0xFFF;
@@ -462,6 +467,7 @@ int tex_loadblock(u32 w0, u32 w1)
 
 int tex_loadtile(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     Tile *t = &s_tile[(w1 >> 24) & 7];
     u32 uls = ((w0 >> 12) & 0xFFF) >> 2, ult = (w0 & 0xFFF) >> 2;
     u32 lrs = ((w1 >> 12) & 0xFFF) >> 2, lrt = (w1 & 0xFFF) >> 2;
@@ -509,6 +515,7 @@ int tex_loadtile(u32 w0, u32 w1)
  * palette after its texels and starts the load past them (gDPLoadTLUT07). */
 int tex_loadtlut(u32 w0, u32 w1)
 {
+    TEX_SYNC();
     Tile *t = &s_tile[(w1 >> 24) & 7];
     u32 uls = ((w0 >> 12) & 0xFFF) >> 2, ult = (w0 & 0xFFF) >> 2;
     u32 lrs = ((w1 >> 12) & 0xFFF) >> 2;
@@ -914,6 +921,7 @@ static void tile_decode(const TilePrep *pp, u32 *out_texels)
 
 u16 tex_get(int tile, u32 om_h, TexMap *map)
 {
+    TEX_SYNC();
     /* The same tile, TMEM and modes as last time this task: the same
      * texture (one used this frame isn't evicted). */
     tile &= 7;
@@ -951,6 +959,7 @@ u16 tex_get(int tile, u32 om_h, TexMap *map)
  * halve. 0 if there is no usable chain. */
 u16 tex_get_mip(int tile, int levels, u32 om_h, TexMap *map)
 {
+    TEX_SYNC();
     static u32 s_mip[MAX_TEXELS / 2];
     TilePrep pp[8];
     tile_prep(tile, om_h, map, &pp[0]);
@@ -990,6 +999,7 @@ u16 tex_get_mip(int tile, int levels, u32 om_h, TexMap *map)
 
 void tex_regs_get(TexRegs *r)
 {
+    TEX_SYNC();
     __builtin_memcpy(r->tile, s_tile, sizeof s_tile);
     __builtin_memcpy(r->set, s_tile_set, sizeof s_tile_set);
     __builtin_memcpy(r->size, s_tile_size, sizeof s_tile_size);
@@ -1001,6 +1011,7 @@ void tex_regs_get(TexRegs *r)
 
 int tex_regs_tile_same(const TexRegs *r, int i, int size)
 {
+    TEX_SYNC();
     const Tile *a = &s_tile[i], *b = &r->tile[i];
     if (size)
         return a->uls == b->uls && a->ult == b->ult && a->lrs == b->lrs && a->lrt == b->lrt;
@@ -1009,6 +1020,7 @@ int tex_regs_tile_same(const TexRegs *r, int i, int size)
 
 int tex_regs_timg_same(const TexRegs *r)
 {
+    TEX_SYNC();
     return s_timg.fmt == r->timg_fmt && s_timg.siz == r->timg_siz && s_timg.width == r->timg_width &&
            s_timg.addr == r->timg_addr;
 }
@@ -1017,6 +1029,7 @@ int tex_regs_timg_same(const TexRegs *r)
  * bytes [start, start + len) by them (no recording hook). */
 void tex_loads_get(TexLoads *l)
 {
+    TEX_SYNC();
     l->n = s_nloads;
     for (int i = 0; i < s_nloads; i++) {
         l->start[i] = s_loads[i].start;
@@ -1027,6 +1040,7 @@ void tex_loads_get(TexLoads *l)
 
 u64 tex_loads_key(const TexLoads *l, u32 start, u32 len)
 {
+    TEX_SYNC();
     TexLoads live;
     if (!l) {
         tex_loads_get(&live);
@@ -1046,6 +1060,7 @@ u64 tex_loads_key(const TexLoads *l, u32 start, u32 len)
 
 void tex_rec_begin(void)
 {
+    TEX_SYNC();
     s_gen++;
     s_hi_gen++;
 }
