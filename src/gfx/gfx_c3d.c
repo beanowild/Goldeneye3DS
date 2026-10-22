@@ -77,7 +77,8 @@ static u32 s_depth_scale;             /* the depth map (f24): scale, offsets pla
 static u32 s_depth_offset[2];
 static int s_unif;                    /* the shader's first uniform (tA0); the rest follow */
 static int s_unif_ster;               /* its eye shift */
-static int s_unif_xf;                 /* its transform (gfxb_set_xform) */
+static int s_unif_xf;                 /* its transforms (gfxb_set_xform) */
+static int s_bool_skin;               /* its bool uniform "skin" */
 
 /* Static geometry (gfxb_static_*): a bump allocator over one linear block.
  * Draws from it point attribute buffer 0 at the vertices, then back at
@@ -353,8 +354,10 @@ void gfxb_init(void)
             pal_fatal("f3d.v.pica: uniform %s is not where expected", names[i]);
     s_unif_ster = shaderInstanceGetUniformLocation(s_prog.vertexShader, "ster");
     s_unif_xf = shaderInstanceGetUniformLocation(s_prog.vertexShader, "xf");
-    if (s_unif_ster < 0 || s_unif_xf < 0)
-        pal_fatal("f3d.v.pica: uniform ster or xf missing");
+    /* a bool's location comes as its register less 0x10: 0x68 + index */
+    s_bool_skin = shaderInstanceGetUniformLocation(s_prog.vertexShader, "skin") - 0x68;
+    if (s_unif_ster < 0 || s_unif_xf < 0 || s_bool_skin < 0 || s_bool_skin > 15)
+        pal_fatal("f3d.v.pica: uniform ster, xf or skin missing");
 
     s_vbuf = linearAlloc(VBUF_VERTS * sizeof(GfxVtx));
     s_ibuf = linearAlloc(IBUF_INDICES * sizeof(u16));
@@ -428,25 +431,33 @@ void gfxb_frame_begin(void)
     GfxState none;
     memset(&none, 0, sizeof none);
     apply_state(&none, GPU_WRITE_COLOR);
-    gfxb_set_xform(NULL);
+    gfxb_set_xform(NULL, 0, NULL);
 }
 
-void gfxb_set_xform(const float rows[GFX_XFORM_ROWS][4])
+/* n vectors to the shader's float uniforms from index at, as citro3d sends
+ * a vector: w, z, y, x. */
+static u32 *unif_rows(u32 *p, int at, const float (*rows)[4], int n)
 {
-    static const float identity[GFX_XFORM_ROWS][4] = {
-        { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 },
-    };
-    if (!rows)
-        rows = identity;
-    u32 *p = cmd_begin(4 + GFX_XFORM_ROWS * 4);
-    if (!p)
-        return;
-    u32 v[GFX_XFORM_ROWS * 4];
-    for (int i = 0; i < GFX_XFORM_ROWS; i++)   /* as citro3d sends a vector: w, z, y, x */
+    u32 v[GFX_XFORM_MAX * GFX_XFORM_ROWS * 4];
+    for (int i = 0; i < n; i++)
         for (int k = 0; k < 4; k++)
             memcpy(&v[i * 4 + k], &rows[i][3 - k], 4);
-    p = wr(p, GPUREG_VSH_FLOATUNIFORM_CONFIG, 0xF, 0x80000000u | s_unif_xf);
-    p = wr_n(p, GPUREG_VSH_FLOATUNIFORM_DATA, 0, v, GFX_XFORM_ROWS * 4);
+    p = wr(p, GPUREG_VSH_FLOATUNIFORM_CONFIG, 0xF, 0x80000000u | at);
+    return wr_n(p, GPUREG_VSH_FLOATUNIFORM_DATA, 0, v, n * 4);
+}
+
+void gfxb_set_xform(const float (*rows)[4], int n, const float fog[4])
+{
+    static const float off[1][4] = { { 0, 0, 0, 0 } };
+    if (n > GFX_XFORM_MAX)
+        n = GFX_XFORM_MAX;
+    u32 *p = cmd_begin(20 + n * GFX_XFORM_ROWS * 4);
+    if (!p)
+        return;
+    if (rows && n > 0)
+        p = unif_rows(p, s_unif_xf, rows, n * GFX_XFORM_ROWS);
+    p = unif_rows(p, s_unif_xf + GFX_XFORM_MAX * GFX_XFORM_ROWS, rows ? (const float (*)[4])fog : off, 1);
+    p = wr(p, GPUREG_VSH_BOOLUNIFORM, 0xF, 0x7FFF0000u | (rows ? 1u << s_bool_skin : 0));
     cmd_end(p);
 }
 

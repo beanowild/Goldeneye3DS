@@ -37936,7 +37936,7 @@ index 48ef1265..4390f564 100644
      return DL;
  }
 diff --git a/src/game/model.c b/src/game/model.c
-index 955b6a1f..6253a7e1 100644
+index 955b6a1f..2572e5d2 100644
 --- a/src/game/model.c
 +++ b/src/game/model.c
 @@ -2158,6 +2158,15 @@ void modelUpdateNodeRelations(Model *model)
@@ -37986,7 +37986,53 @@ index 955b6a1f..6253a7e1 100644
  }
  
  
-@@ -5612,6 +5622,9 @@ u32 *sub_GAME_7F07549C(void *arg0, f32 *arg1, f32 *arg2, ModelNode **nodeptr)
+@@ -4246,6 +4256,21 @@ Model Type 4: Normal Fog/Lighting object
+ These are applied to each part of an object at runtime and can be overridden. loading the next part will use these values once more.
+ GeometryMode is not in setup and is persistent accross parts.
+ */
++#ifdef TARGET_3DS
++/* A model part's list between tags: the renderer keeps it on the GPU and
++ * draws it again (f3d.c f3d_gfx_part), parts of the same model sharing it. */
++extern Gfx *f3d_gfx_part(Gfx *g, int begin);
++static Gfx *portPart(Gfx *g, Gfx *dl)
++{
++    g = f3d_gfx_part(g, 1);
++    gSPDisplayList(g++, dl);
++    return f3d_gfx_part(g, 0);
++}
++#define PORT_PART(dl) (renderdata->gdl = portPart(renderdata->gdl, dl))
++#else
++#define PORT_PART(dl) gSPDisplayList(renderdata->gdl++, dl)
++#endif
++
+ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *node)
+ {
+     union ModelRoData *rodata = node->Data;
+@@ -4284,12 +4309,12 @@ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *nod
+ 
+                 gSPSegment(renderdata->gdl++, SPSEGMENT_MODEL_VTX, osVirtualToPhysical(rwdata->DisplayListCollisions.Vertices));
+ 
+-                gSPDisplayList(renderdata->gdl++, rwdata->DisplayListCollisions.gdl);
++                PORT_PART(rwdata->DisplayListCollisions.gdl);
+ 
+                 if (rodata->DisplayListCollisions.ModelType == 3 && rodata->DisplayListCollisions.Secondary)
+                 {
+                     modelApplyRenderModeType3(renderdata, FALSE);
+-                    gSPDisplayList(renderdata->gdl++, rodata->DisplayListCollisions.Secondary);
++                    PORT_PART(rodata->DisplayListCollisions.Secondary);
+                 }
+             }
+         }
+@@ -4311,7 +4336,7 @@ void modelRenderNodeDl(ModelRenderData *renderdata, Model *model, ModelNode *nod
+ 
+                 modelApplyRenderModeType4(renderdata, FALSE);
+ 
+-                gSPDisplayList(renderdata->gdl++, rodata->DisplayListCollisions.Secondary);
++                PORT_PART(rodata->DisplayListCollisions.Secondary);
+             }
+         }
+     }
+@@ -5612,6 +5637,9 @@ u32 *sub_GAME_7F07549C(void *arg0, f32 *arg1, f32 *arg2, ModelNode **nodeptr)
   * Address 7F0754BC.
   * Copy animation from ROM to RAM
  */
@@ -37996,7 +38042,7 @@ index 955b6a1f..6253a7e1 100644
  s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
  {
      s32 ret;
-@@ -5628,6 +5641,15 @@ s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
+@@ -5628,6 +5656,15 @@ s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
          // Load that frame from RAM
          ret = anim->address + (frame * frameSize);
      }

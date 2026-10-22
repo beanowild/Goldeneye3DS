@@ -1,9 +1,11 @@
 ; f3d.v.pica - vertex shader for the F3D interpreter.
 ;
-; Positions go through xf (gfxb_set_xform): identity for what the
-; interpreter transformed on the CPU, as the N64's RSP did; the room's
-; matrices for room geometry kept on the GPU in model space, with the
-; RSP's fog worked out here too. The rest is turning the landscape
+; Positions: as they are for what the interpreter transformed on the CPU,
+; as the N64's RSP did; with "skin" (gfxb_set_xform), geometry kept on the
+; GPU in model space (rooms, model parts) goes through a palette of
+; transforms, w naming each vertex's (5 rows per entry: clip x, y, z, w
+; and the game's clip z), and the RSP's fog is worked out here too. The
+; rest is turning the landscape
 ; picture onto the top screen's portrait framebuffer, mapping the RDP's
 ; texel coordinates onto each texture unit, and the vertex colour.
 ;
@@ -37,9 +39,10 @@
 .fvec tA0, tB0, tA1, tB1, tN1, cmul, cadd
 ; on its own: the right eye's copy of the frame patches its E
 .fvec ster
-; on its own, set between draws: clip x, y, z, w rows, the game's clip z
-; row, fog (scale, offset, on, 0)
-.fvec xf[6]
+; on its own, set between draws: 15 transforms of 5 rows, then fog
+; (scale, offset, on, 0) at xf[75] (gfx_backend.h GFX_XFORM_*)
+.fvec xf[76]
+.bool skin
 
 ; framebuffer x runs down the physical screen, y left to right:
 ; out = (y, -x, z, w)
@@ -52,18 +55,26 @@
 .constf c255(255.0, 255.0, 255.0, 255.0)
 
 .proc main
-    dp4 r6.x, xf[0], inpos
-    dp4 r6.y, xf[1], inpos
-    dp4 r6.z, xf[2], inpos
-    dp4 r6.w, xf[3], inpos
+    ifu skin
+        mova a0.x, inpos.w
+        mov r0, inpos
+        mov r0.w, one
+        dp4 r6.x, xf[a0.x], r0
+        dp4 r6.y, xf[a0.x+1], r0
+        dp4 r6.z, xf[a0.x+2], r0
+        dp4 r6.w, xf[a0.x+3], r0
+        dp4 r9.x, xf[a0.x+4], r0
+    .else
+        mov r6, inpos
+        mov r9, zero
+    .end
     rcp r7, r6.wwww
     mul r3, r6, r7
 
     ; fog: alpha = 255 * clamp(cz / w * scale + offset) where w > 0, else 0
-    dp4 r9.x, xf[4], inpos
     mul r9, r7, r9.xxxx
-    mul r9, xf[5].xxxx, r9
-    add r9, xf[5].yyyy, r9
+    mul r9, xf[75].xxxx, r9
+    add r9, xf[75].yyyy, r9
     max r9, zero, r9
     min r9, one, r9
     slt r10, zero, r6.wwww
@@ -71,7 +82,7 @@
     mul r9, c255, r9
     mov r11, inclr
     add r12, -r11, r9
-    mul r12, xf[5].zzzz, r12
+    mul r12, xf[75].zzzz, r12
     add r11.w, r11, r12
 
     mul r5, ster.xxxx, r6.wwww
