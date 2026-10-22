@@ -17,10 +17,10 @@ dspfirm.cdc
 *.cia
 __pycache__/
 # Decomp checkout: builder.py clones n64decomp/007 and applies patches/
-external/
+/external/
 # Game-derived or personal files: never publish
-banner/
+/banner/
 crash dumps/
-MODEL/
-UI/
+/MODEL/
+/UI/
 tools/romtocia/payload/
