@@ -2205,11 +2205,12 @@ static void lazy_flush(void)
  * (cc_compile memoises), the fog stage's colour replaced. NULL if a
  * recompiled combiner comes out differently shaped (then the part is
  * recorded again). */
-static const GfxState *room_live_states(const Room *rm)
+static const GfxState *room_live_states(Room *rm)
 {
-    int dp = R.prim_c != rm->in.prim_c || R.prim_lod != rm->in.prim_lod;
-    int de = R.env_c != rm->in.env_c;
-    int df = R.fog_c != rm->in.fog_c;
+    /* only colours the list reads before setting them */
+    int dp = (rm->need & (1ull << RG_PRIM)) && (R.prim_c != rm->in.prim_c || R.prim_lod != rm->in.prim_lod);
+    int de = (rm->need & (1ull << RG_ENV)) && R.env_c != rm->in.env_c;
+    int df = (rm->need & (1ull << RG_FOGC)) && R.fog_c != rm->in.fog_c;
     if (!dp && !de && !df)
         return rm->st;
     static GfxState *s_live;
@@ -2238,15 +2239,28 @@ static const GfxState *room_live_states(const Room *rm)
         if ((c->live & 4) && df && c->fog_stage >= 0)
             st->stages[c->fog_stage].constant = R.fog_c;
     }
-    return s_live;
+    /* kept as the recording's own: a colour that changed once (or holds
+     * between changes) costs one recompile, not one a frame */
+    __builtin_memcpy(rm->st, s_live, rm->nstate * sizeof *s_live);
+    if (dp) {
+        rm->in.prim_c = R.prim_c;
+        rm->in.prim_lod = R.prim_lod;
+    }
+    if (de)
+        rm->in.env_c = R.env_c;
+    if (df)
+        rm->in.fog_c = R.fog_c;
+    return rm->st;
 }
 
 /* Draws a recording; 0 if it doesn't fit the state as it is now (then
  * the list is interpreted). */
 static int room_replay(Room *rm)
 {
-    /* parts take the colours found on entry live (room_live_states) */
-    const u64 live = (rm->tag & PART_BIT) ? (1ull << RG_PRIM) | (1ull << RG_ENV) | (1ull << RG_FOGC) : 0;
+    /* the colours found on entry are taken live (room_live_states): model
+     * parts are tinted per instance, and rooms' primitive colour can change
+     * from frame to frame (Cradle) */
+    const u64 live = (1ull << RG_PRIM) | (1ull << RG_ENV) | (1ull << RG_FOGC);
     if (rm->pool != s_pool_gen)
         return 0;
     /* what the list read on entry, as it is now */
