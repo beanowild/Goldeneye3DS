@@ -1684,8 +1684,10 @@ void f3d_rec_tmem_load(u32 start, u32 end)
     }
 }
 
-/* TMEM read: what the room loaded, or else what it found on entry, by the
- * key of the records then (compared on replay); not a mix of the two. */
+/* TMEM read: where it isn't all what the room loaded, the key of the
+ * records found on entry over the whole range (compared on replay). For a
+ * mix (the room's texture, an earlier palette) that is stricter than it
+ * need be, but the room still records. */
 void f3d_rec_tmem_read(u32 start, u32 len)
 {
     int loaded = 0, found = 0;
@@ -1696,12 +1698,9 @@ void f3d_rec_tmem_read(u32 start, u32 len)
         else
             found = 1;
     }
+    (void)loaded;
     if (!found)
         return;
-    if (loaded) {
-        rec_stop(WHY_TMEM);
-        return;
-    }
     for (int i = 0; i < REC.ntin; i++)
         if (REC.tin_tmem[i].start == start && REC.tin_tmem[i].len == len)
             return;
