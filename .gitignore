@@ -1,0 +1,25 @@
+build/
+*.3dsx
+*.smdh
+*.elf
+*.z64
+*.n64
+*.v64
+test_input_map
+test_input_map.exe
+dist/
+baserom*.z64
+.tools/
+build-*/
+dist-*/
+*.log
+dspfirm.cdc
+*.cia
+__pycache__/
+# Decomp checkout: builder.py clones n64decomp/007 and applies patches/
+external/
+# Game-derived or personal files: never publish
+banner/
+crash dumps/
+MODEL/
+UI/

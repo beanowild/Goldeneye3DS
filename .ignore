@@ -1,0 +1,15 @@
+# Not a git repo, so ripgrep (Claude's search) doesn't read .gitignore;
+# it does read this file. Keeps searches out of generated and tool trees.
+build/
+build-*/
+dist/
+dist-*/
+.tools/
+crash dumps/
+patches/
+MODEL/
+*.z64
+*.bin
+*.png
+*.bmp
+*.rgba
