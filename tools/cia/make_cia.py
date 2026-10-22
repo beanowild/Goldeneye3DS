@@ -30,13 +30,13 @@ TOOLS = ROOT / ".tools"
 BANNERTOOL = TOOLS / "bannertool" / "windows-x86_64" / "bannertool.exe"
 MAKEROM = TOOLS / "makerom" / "makerom.exe"
 
-TITLE = "Goldeneye 64"
+TITLE = "GoldenEye"
 PRODUCT_CODE = "CTR-P-GE07"
 UNIQUE_ID = 0xE0070          # homebrew range (0x0F800-0xFF7FF)
 MAX_SECONDS = 2.9375
 FADE_SECONDS = 0.02
 SOUND_RATE = 32728           # the 3DS's own output rate, as official banners use
-VERSION = "1.1.9"            # bump so a new CIA installs over the last one
+VERSION = "1.0.0"            # bump so a new CIA installs over the last one
 
 
 def read_wav(path):

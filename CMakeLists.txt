@@ -130,8 +130,8 @@ if(GE_INTEGRATE)
 endif()
 
 ctr_generate_smdh(ge007.smdh
-    NAME        "Goldeneye 64"
-    DESCRIPTION "N64 decompilation port"
+    NAME        "GoldenEye"
+    DESCRIPTION "GoldenEye 007 v1.0"
     AUTHOR      "Rare"
     ICON        ${CMAKE_SOURCE_DIR}/res/icon.png
 )
