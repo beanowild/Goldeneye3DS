@@ -1419,7 +1419,7 @@ index 74fe4961..bf234536 100644
  #define YSCALE_MAX      0x800
  
 diff --git a/src/game/bg.c b/src/game/bg.c
-index 858c35e2..d7048a7d 100644
+index 858c35e2..fc6ab225 100644
 --- a/src/game/bg.c
 +++ b/src/game/bg.c
 @@ -20,9 +20,22 @@
@@ -1554,14 +1554,20 @@ index 858c35e2..d7048a7d 100644
  
      /**
       * Copy the decompressed GDL back to the end of the buffer as scratch.
-@@ -2424,7 +2468,23 @@ s32 bgCheckIfRoomModelNeedsLoad(s32 roomID)
+@@ -2424,7 +2468,29 @@ s32 bgCheckIfRoomModelNeedsLoad(s32 roomID)
  *
  * Address: 7F0B6368
  */
 +#ifdef TARGET_3DS
++/* Each room's data changes (loads, shot-out lights): the renderer keeps
++ * a room's geometry on the GPU and draws it again while this is unchanged
++ * (f3d.c f3d_gfx_room). */
++u16 g_PortRoomGen[PORT_MAX_ROOMS];
++
 +static void bgLoadRoomModelDataImpl(s32 roomID);
-+void bgLoadRoomModelData(s32 roomID)
+ void bgLoadRoomModelData(s32 roomID)
 +{
++    PORT_ROOM_CHANGED(roomID);
 +    /* developer timer (-gfxdbg): rooms unpacked as they come into view */
 +    extern int g_gfx_debug_enabled;
 +    extern unsigned long long pal_ticks(void);
@@ -1573,12 +1579,12 @@ index 858c35e2..d7048a7d 100644
 +}
 +static void bgLoadRoomModelDataImpl(s32 roomID)
 +#else
- void bgLoadRoomModelData(s32 roomID)
++void bgLoadRoomModelData(s32 roomID)
 +#endif
  {
      /*
       * Keep this prototype visible here for IDO codegen.
-@@ -2574,6 +2634,7 @@ void delete_room_data(s32 roomID)
+@@ -2574,6 +2640,7 @@ void delete_room_data(s32 roomID)
      s32 size2;
      Vtx *pointindex;
  
@@ -1586,7 +1592,7 @@ index 858c35e2..d7048a7d 100644
      if (room->vtx_batch_bounds != NULL) {
          memaFree(
              room->vtx_batch_bounds,
-@@ -2659,6 +2720,7 @@ void bgRoomsTickUnload(void)
+@@ -2659,6 +2726,7 @@ void bgRoomsTickUnload(void)
   * Ensures the room's bg data is loaded if budget allows, then appends its display list.
   * Also resets the age of rendered rooms so bgRoomsTickUnload won't unload it.
  */
@@ -1594,9 +1600,16 @@ index 858c35e2..d7048a7d 100644
  Gfx *bgRenderRoomPrimary(Gfx *gdl, s32 room_index)
  {
      if (room_index >= g_MaxNumRooms)
-@@ -2687,6 +2749,9 @@ Gfx *bgRenderRoomPrimary(Gfx *gdl, s32 room_index)
+@@ -2686,7 +2754,16 @@ Gfx *bgRenderRoomPrimary(Gfx *gdl, s32 room_index)
+             gdl = applyRoomMatrixToDisplayList(gdl, room_index);
  
              gSPSegment(gdl++, SPSEGMENT_BG_VTX, OS_K0_TO_PHYSICAL(g_BgRoomInfo[room_index].vertices));
++#ifdef TARGET_3DS
++            {
++                extern Gfx *f3d_gfx_room(Gfx *g, int room, int secondary, int gen);
++                gdl = f3d_gfx_room(gdl, room_index, 0, g_PortRoomGen[room_index % PORT_MAX_ROOMS]);
++            }
++#endif
              gSPDisplayList(gdl++, OS_K0_TO_PHYSICAL(g_BgRoomInfo[room_index].ptr_expanded_mapping_info));
 +#ifdef TARGET_3DS
 +            { extern Gfx *f3d_gfx_prof(Gfx *g, int on); gdl = f3d_gfx_prof(gdl, 0); }
@@ -1604,9 +1617,16 @@ index 858c35e2..d7048a7d 100644
  
              // Set the room's state to "loaded"
              g_BgRoomInfo[room_index].model_bin_loaded = 1;
-@@ -2722,6 +2787,9 @@ Gfx *bgRenderRoomSecondary(Gfx *gdl, s32 room_index)
+@@ -2721,7 +2798,16 @@ Gfx *bgRenderRoomSecondary(Gfx *gdl, s32 room_index)
+             gdl = applyRoomMatrixToDisplayList(gdl, room_index);
  
              gSPSegment(gdl++, SPSEGMENT_BG_VTX, OS_K0_TO_PHYSICAL(g_BgRoomInfo[room_index].vertices));
++#ifdef TARGET_3DS
++            {
++                extern Gfx *f3d_gfx_room(Gfx *g, int room, int secondary, int gen);
++                gdl = f3d_gfx_room(gdl, room_index, 1, g_PortRoomGen[room_index % PORT_MAX_ROOMS]);
++            }
++#endif
              gSPDisplayList(gdl++, OS_K0_TO_PHYSICAL(g_BgRoomInfo[room_index].ptr_secondary_expanded_mapping_info));
 +#ifdef TARGET_3DS
 +            { extern Gfx *f3d_gfx_prof(Gfx *g, int on); gdl = f3d_gfx_prof(gdl, 0); }
@@ -1614,7 +1634,7 @@ index 858c35e2..d7048a7d 100644
  
              // Set the room's state to "loaded"
              g_BgRoomInfo[room_index].model_bin_loaded = 1;
-@@ -2767,9 +2835,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
+@@ -2767,9 +2853,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
      cmdindex = 0;
      numpoints = 0;
  
@@ -1626,7 +1646,7 @@ index 858c35e2..d7048a7d 100644
          {
              numpoints++;
          }
-@@ -2791,9 +2859,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
+@@ -2791,9 +2877,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
      numpoints = 0;
      cmdindex = 0;
  
@@ -1638,7 +1658,7 @@ index 858c35e2..d7048a7d 100644
          {
              point = &points[numpoints];
  
-@@ -2805,9 +2873,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
+@@ -2805,9 +2891,9 @@ void bgBuildRoomVtxBounds(s32 roomID)
                  points[numpoints].max[i] = -0x8000;
              }
  
@@ -1650,7 +1670,7 @@ index 858c35e2..d7048a7d 100644
  
              for (i = 0; i < numvertices; i++)
              {
-@@ -3077,14 +3145,14 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3077,14 +3163,14 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
  
      gdl = (Gfx *) g_BgRoomInfo[roomnum].ptr_expanded_mapping_info;
      gdl = &gdl[point->gdlindex];
@@ -1667,7 +1687,7 @@ index 858c35e2..d7048a7d 100644
  
      if ((op != G_VTX) && (op != ((s8) G_ENDDL)))
      {
-@@ -3097,9 +3165,9 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3097,9 +3183,9 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                  bboxMin = D_80044868;
                  bboxMax = D_80044874;
                  score = dist;
@@ -1680,7 +1700,7 @@ index 858c35e2..d7048a7d 100644
                  i = 0;
                  
                  do
-@@ -3157,12 +3225,12 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3157,12 +3243,12 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                          score = dist;
                          found = 1;
  
@@ -1695,7 +1715,7 @@ index 858c35e2..d7048a7d 100644
                                  {
                                      break;
                                  }
-@@ -3177,7 +3245,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3177,7 +3263,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                          else
                          {
                              temp.word = ((u32 *) tcmd)[1] - 8;
@@ -1704,7 +1724,7 @@ index 858c35e2..d7048a7d 100644
                          }
  
                          if (check_if_imageID_is_light(texnum))
-@@ -3220,26 +3288,26 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3220,26 +3306,26 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                          if (s2 == 0)
                          {
                              idx2[0] = (((u32 *) gdl)[1] & 0xf) - vtxoff;
@@ -1740,7 +1760,7 @@ index 858c35e2..d7048a7d 100644
                          }
  
                          i = 0;
-@@ -3295,12 +3363,12 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3295,12 +3381,12 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                                  score = dist;
                                  found = 1;
  
@@ -1755,7 +1775,7 @@ index 858c35e2..d7048a7d 100644
                                          {
                                              break;
                                          }
-@@ -3315,7 +3383,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3315,7 +3401,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
                                  else
                                  {
                                      temp.word = ((u32 *) tcmd)[1] - 8;
@@ -1764,7 +1784,7 @@ index 858c35e2..d7048a7d 100644
                                  }
  
                                  if (check_if_imageID_is_light(texnum))
-@@ -3350,7 +3418,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
+@@ -3350,7 +3436,7 @@ bool bgTestRayIntersectionInRoom(coord3d *from, coord3d *to, coord3d *dir, RoomV
              }
  
              gdl++;
@@ -1773,7 +1793,7 @@ index 858c35e2..d7048a7d 100644
          }
          while ((op != G_VTX) && (op != ((s8) G_ENDDL)));
      }
-@@ -4408,6 +4476,70 @@ void bgDetermineVisibleRooms(void)
+@@ -4408,6 +4494,70 @@ void bgDetermineVisibleRooms(void)
          {
              // empty
          }
@@ -1844,7 +1864,7 @@ index 858c35e2..d7048a7d 100644
  #endif
      }
  
-@@ -5107,7 +5239,7 @@ s32 bgGetPortalBetweenRooms(s32 room1, s32 room2, coord3d *arg2, coord3d *arg3)
+@@ -5107,7 +5257,7 @@ s32 bgGetPortalBetweenRooms(s32 room1, s32 room2, coord3d *arg2, coord3d *arg3)
      s32 portalIndex = -1;
  
      #ifndef DEBUG
@@ -1853,7 +1873,7 @@ index 858c35e2..d7048a7d 100644
      #endif
  
      for (i = 0; g_BgPortals[i].offset_portal != NULL; i++)
-@@ -5410,8 +5542,16 @@ void sub_GAME_7F0BA2D4(coord3d *bbmin, coord3d *bbmax, s32 *room_list, s32 *coun
+@@ -5410,8 +5560,16 @@ void sub_GAME_7F0BA2D4(coord3d *bbmin, coord3d *bbmax, s32 *room_list, s32 *coun
                          goto next_portal;
                      }
                      
@@ -1871,13 +1891,19 @@ index 858c35e2..d7048a7d 100644
                      
                      for (j = 0; j < portal_pts->numPoints; j++)
 diff --git a/src/game/bg.h b/src/game/bg.h
-index 567cefe5..93aeea27 100644
+index 567cefe5..51c18e58 100644
 --- a/src/game/bg.h
 +++ b/src/game/bg.h
-@@ -231,4 +231,5 @@ void bgFindRoomsAlongSegment(coord3d *pos1, coord3d *pos2, u8 *initialRooms, u8
+@@ -231,4 +231,11 @@ void bgFindRoomsAlongSegment(coord3d *pos1, coord3d *pos2, u8 *initialRooms, u8
  s32 sub_GAME_7F0B9E04(coord3d *arg0, coord3d *arg1);
  void bgRoomCalcBB(s32 room);
  
++
++#ifdef TARGET_3DS
++#define PORT_MAX_ROOMS 512
++extern u16 g_PortRoomGen[PORT_MAX_ROOMS];
++#define PORT_ROOM_CHANGED(room) (g_PortRoomGen[(room) % PORT_MAX_ROOMS]++)
++#endif
 +
  #endif
 diff --git a/src/game/bgapply.c b/src/game/bgapply.c
@@ -36464,7 +36490,7 @@ index 4ee6fc45..c165eaff 100644
  
  
 diff --git a/src/game/lightfixture.c b/src/game/lightfixture.c
-index b75779e1..8f329bfe 100644
+index b75779e1..6d03b35f 100644
 --- a/src/game/lightfixture.c
 +++ b/src/game/lightfixture.c
 @@ -177,12 +177,12 @@ Vtx *lightFindVertexBaseForTri(Gfx *gfx, s32 room_index)
@@ -36525,7 +36551,27 @@ index b75779e1..8f329bfe 100644
              break;
      }
  }
-@@ -541,7 +541,7 @@ void lightFixtureBreak(Gfx * hit_gfx, u32 tri_type, s32 room_index)
+@@ -269,6 +269,9 @@ void redarken_lights_in_room(s32 room_index)
+         vertex[unk->vtx_index].v.cn[1] >>= 2;
+         vertex[unk->vtx_index].v.cn[2] >>= 2;
+         vertex[unk->vtx_index].v.cn[3] >>= 2;
++#ifdef TARGET_3DS
++        PORT_ROOM_CHANGED(room_index);
++#endif
+     }
+ }
+ 
+@@ -290,6 +293,9 @@ void darken_vertex_in_room(Vtx * vertex, s32 room_index)
+     vertex->v.cn[1] >>= 2;
+     vertex->v.cn[2] >>= 2;
+     vertex->v.cn[3] >>= 2;
++#ifdef TARGET_3DS
++    PORT_ROOM_CHANGED(room_index);
++#endif
+ 
+     cur_entry_darkened_light_table++;
+ 
+@@ -541,7 +547,7 @@ void lightFixtureBreak(Gfx * hit_gfx, u32 tri_type, s32 room_index)
           */
          for (fixture_gfx = light_fixture_table[i].ptr_start_pertinent_DL; fixture_gfx < light_fixture_table[i].ptr_end_pertinent_DL; fixture_gfx++)
          {
@@ -36534,7 +36580,7 @@ index b75779e1..8f329bfe 100644
              {
                  darken_tri1 = 0;
   
-@@ -565,7 +565,7 @@ void lightFixtureBreak(Gfx * hit_gfx, u32 tri_type, s32 room_index)
+@@ -565,7 +571,7 @@ void lightFixtureBreak(Gfx * hit_gfx, u32 tri_type, s32 room_index)
                      darken_triangle_in_room(fixture_gfx, 0, light_fixture_table[i].room_index);
                  }
              }

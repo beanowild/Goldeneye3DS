@@ -1,7 +1,9 @@
 ; f3d.v.pica - vertex shader for the F3D interpreter.
 ;
-; Positions arrive in clip space already (the interpreter transforms on
-; the CPU, as the N64's RSP did). The work here is turning the landscape
+; Positions go through xf (gfxb_set_xform): identity for what the
+; interpreter transformed on the CPU, as the N64's RSP did; the room's
+; matrices for room geometry kept on the GPU in model space, with the
+; RSP's fog worked out here too. The rest is turning the landscape
 ; picture onto the top screen's portrait framebuffer, mapping the RDP's
 ; texel coordinates onto each texture unit, and the vertex colour.
 ;
@@ -35,6 +37,9 @@
 .fvec tA0, tB0, tA1, tB1, tN1, cmul, cadd
 ; on its own: the right eye's copy of the frame patches its E
 .fvec ster
+; on its own, set between draws: clip x, y, z, w rows, the game's clip z
+; row, fog (scale, offset, on, 0)
+.fvec xf[6]
 
 ; framebuffer x runs down the physical screen, y left to right:
 ; out = (y, -x, z, w)
@@ -43,23 +48,45 @@
 .constf rot2(0.0, 0.0, 1.0, 0.0)
 .constf rot3(0.0, 0.0, 0.0, 1.0)
 .constf zero(0.0, 0.0, 0.0, 0.0)
+.constf one(1.0, 1.0, 1.0, 1.0)
+.constf c255(255.0, 255.0, 255.0, 255.0)
 
 .proc main
-    rcp r7, inpos.wwww
-    mul r5, ster.xxxx, inpos.wwww
+    dp4 r6.x, xf[0], inpos
+    dp4 r6.y, xf[1], inpos
+    dp4 r6.z, xf[2], inpos
+    dp4 r6.w, xf[3], inpos
+    rcp r7, r6.wwww
+    mul r3, r6, r7
+
+    ; fog: alpha = 255 * clamp(cz / w * scale + offset) where w > 0, else 0
+    dp4 r9.x, xf[4], inpos
+    mul r9, r7, r9.xxxx
+    mul r9, xf[5].xxxx, r9
+    add r9, xf[5].yyyy, r9
+    max r9, zero, r9
+    min r9, one, r9
+    slt r10, zero, r6.wwww
+    mul r9, r10, r9
+    mul r9, c255, r9
+    mov r11, inclr
+    add r12, -r11, r9
+    mul r12, xf[5].zzzz, r12
+    add r11.w, r11, r12
+
+    mul r5, ster.xxxx, r6.wwww
     add r5, -ster.yyyy, r5
-    mul r8, ster.zzzz, inpos.wwww
+    mul r8, ster.zzzz, r6.wwww
     max r5, r8, r5
     mul r5, ster.wwww, r5
-    mov r6, inpos
-    add r6.x, inpos.x, r5.x
+    add r6.x, r6.x, r5.x
 
     dp4 outpos.x, rot0, r6
     dp4 outpos.y, rot1, r6
     dp4 outpos.z, rot2, r6
     dp4 outpos.w, rot3, r6
 
-    mul r0, cmul, inclr
+    mul r0, cmul, r11
     add outclr, cadd, r0
 
     mov r1, zero
@@ -67,7 +94,6 @@
     mul r2, tA0, r1
     add outtc0, tB0, r2
 
-    mul r3, inpos, r7
     mov r4, zero
     mov r4.xy, r3.xy
     mul r4, tN1, r4

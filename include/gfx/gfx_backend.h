@@ -5,10 +5,12 @@
  * Neutral types only: f3d.c includes <ultra64.h>, gfx_c3d.c includes
  * <3ds.h>, and the two can't share a translation unit.
  *
- * The interpreter does all of the N64's geometry work on the CPU (matrix
+ * The interpreter does the N64's geometry work on the CPU (matrix
  * transform, lighting, culling, viewport) and hands over triangles whose
  * positions are already in the backend's clip space, so the GPU only
- * clips, rasterises and shades. The colour combiner arrives already
+ * clips, rasterises and shades. Rooms are the exception: their geometry is
+ * kept on the GPU in model space (gfxb_static_*) and drawn through a
+ * transform (gfxb_set_xform), culled by the GPU. The colour combiner arrives already
  * compiled to texture-environment stages (f3d_cc.c), and textures already
  * decoded to RGBA8 (f3d_tex.c).
  */
@@ -22,8 +24,9 @@
 extern "C" {
 #endif
 
-/* One vertex, as uploaded to the GPU. x, y in [-w, w] cover the screen
- * left to right and bottom to top; z in [-w, 0] is near to far.
+/* One vertex, as uploaded to the GPU. Through the current transform
+ * (identity but for rooms), x, y in [-w, w] cover the screen left to right
+ * and bottom to top; z in [-w, 0] is near to far.
  * s, t are texel coordinates as the RSP hands them to the RDP; the state
  * maps them onto each texture unit (GfxState.tex_map). r, g, b, a is the
  * shade colour (GfxState.shade). Nothing in a vertex depends on the
@@ -88,6 +91,7 @@ typedef struct {
     bool shade;                  /* vertex colours; else white */
     bool noise;                  /* unit 1 also adds noise_scale * (x/w, y/w) */
     uint8_t stereo;              /* GFX_STEREO_*: how the two eyes see it */
+    uint8_t cull;                /* GFX_CULL_*: faces the GPU drops (rooms) */
     GfxTevStage stages[GFX_MAX_STAGES];
     /* per unit: u = s * tex_map[0] + tex_map[2], v = t * tex_map[1] + tex_map[3]
      * (v = 0 is the first row of the image) */
@@ -108,6 +112,30 @@ typedef struct {
  * follows the 3D slider. */
 enum { GFX_STEREO_FLAT, GFX_STEREO_WORLD, GFX_STEREO_SKY,
        GFX_STEREO_LAYER };   /* at stereo_c of the way to infinity, all of it (menus) */
+
+/* Front faces wind counter-clockwise in clip space (y up), as the N64's. */
+enum { GFX_CULL_NONE, GFX_CULL_BACK, GFX_CULL_FRONT };
+
+/* Model space to clip space for the draws that follow (f3d.v.pica xf):
+ * rows[0..3] give clip x, y, z, w as rows . (x, y, z, 1); rows[4] the
+ * game's own clip z and rows[5] = (scale, offset, on, 0) the RSP's fog,
+ * which then replaces vertex alpha: 255 * clamp(z / w * scale + offset),
+ * 0 behind the eye. NULL: identity, fog off. Every frame starts with
+ * identity. */
+#define GFX_XFORM_ROWS 6
+void gfxb_set_xform(const float rows[GFX_XFORM_ROWS][4]);
+
+/* Static geometry: vertices and indices kept on the GPU from frame to
+ * frame. gfxb_static_alloc gives pool memory (8-byte aligned, NULL when
+ * the pool is full) for the caller to fill and then commit. Reset frees it
+ * all; call it only before the frame's first static draw (nothing drawn
+ * from the pool is in flight then). */
+void *gfxb_static_alloc(uint32_t bytes);
+void gfxb_static_commit(const void *p, uint32_t bytes);
+void gfxb_static_reset(void);
+/* count indices idx[] into vtx[] (both from the pool), under the current
+ * state and transform. */
+void gfxb_draw_static(const GfxVtx *vtx, const uint16_t *idx, int count);
 
 void gfxb_init(void);
 

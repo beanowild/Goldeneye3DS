@@ -77,6 +77,15 @@ static u32 s_depth_scale;             /* the depth map (f24): scale, offsets pla
 static u32 s_depth_offset[2];
 static int s_unif;                    /* the shader's first uniform (tA0); the rest follow */
 static int s_unif_ster;               /* its eye shift */
+static int s_unif_xf;                 /* its transform (gfxb_set_xform) */
+
+/* Static geometry (gfxb_static_*): a bump allocator over one linear block.
+ * Draws from it point attribute buffer 0 at the vertices, then back at
+ * s_vbuf (s_vbuf_off); both offsets are from the buffers' base address. */
+#define POOL_BYTES (3 * 1024 * 1024)
+static u8 *s_pool;
+static u32 s_pool_used;
+static u32 s_buf_base, s_vbuf_off;
 
 static float s_stereo_k;              /* this frame's shift at infinity (0: one eye) */
 static u32 s_rec_start;               /* the left eye's commands start here */
@@ -343,6 +352,9 @@ void gfxb_init(void)
         if (shaderInstanceGetUniformLocation(s_prog.vertexShader, names[i]) != s_unif + i)
             pal_fatal("f3d.v.pica: uniform %s is not where expected", names[i]);
     s_unif_ster = shaderInstanceGetUniformLocation(s_prog.vertexShader, "ster");
+    s_unif_xf = shaderInstanceGetUniformLocation(s_prog.vertexShader, "xf");
+    if (s_unif_ster < 0 || s_unif_xf < 0)
+        pal_fatal("f3d.v.pica: uniform ster or xf missing");
 
     s_vbuf = linearAlloc(VBUF_VERTS * sizeof(GfxVtx));
     s_ibuf = linearAlloc(IBUF_INDICES * sizeof(u16));
@@ -352,6 +364,11 @@ void gfxb_init(void)
     BufInfo_Init(bi);
     BufInfo_Add(bi, s_vbuf, sizeof(GfxVtx), 3, 0x210);
     s_ibuf_pa = osConvertVirtToPhys(s_ibuf) - bi->base_paddr;
+    s_buf_base = bi->base_paddr;
+    s_vbuf_off = bi->buffers[0].offset;
+    s_pool = linearAlloc(POOL_BYTES);   /* without it, rooms are interpreted every frame */
+    if (!s_pool)
+        pal_log("gfx: no linear memory for static geometry");
     s_depth_scale = f32tof24(-1.0f);
     s_depth_offset[0] = f32tof24(0.0f);
     s_depth_offset[1] = f32tof24(DECAL_BIAS);
@@ -365,7 +382,7 @@ void gfxb_init(void)
     s_tex[0].live = true;
     tex_regs(&s_tex[0]);
 
-    C3D_CullFace(GPU_CULL_NONE);   /* the interpreter culls, in N64 screen space */
+    C3D_CullFace(GPU_CULL_NONE);   /* then GfxState.cull, from apply_state */
     pal_log("gfx: citro3d up, %lu KB linear memory free", (unsigned long)(linearSpaceFree() / 1024));
 }
 
@@ -411,6 +428,46 @@ void gfxb_frame_begin(void)
     GfxState none;
     memset(&none, 0, sizeof none);
     apply_state(&none, GPU_WRITE_COLOR);
+    gfxb_set_xform(NULL);
+}
+
+void gfxb_set_xform(const float rows[GFX_XFORM_ROWS][4])
+{
+    static const float identity[GFX_XFORM_ROWS][4] = {
+        { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 },
+    };
+    if (!rows)
+        rows = identity;
+    u32 *p = cmd_begin(4 + GFX_XFORM_ROWS * 4);
+    if (!p)
+        return;
+    u32 v[GFX_XFORM_ROWS * 4];
+    for (int i = 0; i < GFX_XFORM_ROWS; i++)   /* as citro3d sends a vector: w, z, y, x */
+        for (int k = 0; k < 4; k++)
+            memcpy(&v[i * 4 + k], &rows[i][3 - k], 4);
+    p = wr(p, GPUREG_VSH_FLOATUNIFORM_CONFIG, 0xF, 0x80000000u | s_unif_xf);
+    p = wr_n(p, GPUREG_VSH_FLOATUNIFORM_DATA, 0, v, GFX_XFORM_ROWS * 4);
+    cmd_end(p);
+}
+
+void *gfxb_static_alloc(uint32_t bytes)
+{
+    bytes = (bytes + 7) & ~7u;
+    if (!s_pool || s_pool_used + bytes > POOL_BYTES)
+        return NULL;
+    void *p = s_pool + s_pool_used;
+    s_pool_used += bytes;
+    return p;
+}
+
+void gfxb_static_commit(const void *p, uint32_t bytes)
+{
+    flush_dcache(p, bytes);
+}
+
+void gfxb_static_reset(void)
+{
+    s_pool_used = 0;
 }
 
 /* The left eye's commands again, to the right eye's target, with each
@@ -475,9 +532,9 @@ static void apply_state(const GfxState *st, GPU_WRITEMASK mask)
 {
     const GfxState *old = s_applied_valid ? &s_applied : NULL;
     /* at most: two textures (8 + 2 words each), the cache clear (2), six
-     * stages (6 each), the buffer bits (2), scissor (4), effect (12),
-     * uniforms (32) */
-    u32 *p = cmd_begin(120);
+     * stages (6 each), the buffer bits (2), scissor (4), culling (2),
+     * effect (12), uniforms (32) */
+    u32 *p = cmd_begin(124);
     if (!p)
         return;
 
@@ -542,6 +599,12 @@ static void apply_state(const GfxState *st, GPU_WRITEMASK mask)
             r[2] = (right - 1) | (bottom - 1) << 16;
         }
         p = wr_inc(p, GPUREG_SCISSORTEST_MODE, r, 3);
+    }
+
+    if (!old || old->cull != st->cull) {
+        /* the framebuffer's quarter turn (f3d.v.pica) keeps the winding */
+        static const u32 mode[3] = { GPU_CULL_NONE, GPU_CULL_BACK_CCW, GPU_CULL_FRONT_CCW };
+        p = wr(p, GPUREG_FACECULLING_CONFIG, 0x1, mode[st->cull]);
     }
 
     if (unif_differs(old, st)) {
@@ -659,6 +722,24 @@ void gfxb_draw(const GfxVtx *v, int count)
         idx[i] = (u16)(first + i);
     draw_elements(s_iused, count);
     s_iused += count;
+}
+
+void gfxb_draw_static(const GfxVtx *vtx, const uint16_t *idx, int count)
+{
+    u32 *p = cmd_begin(4);
+    if (!p)
+        return;
+    p = wr(p, GPUREG_ATTRIBBUFFER0_OFFSET, 0xF, osConvertVirtToPhys(vtx) - s_buf_base);
+    cmd_end(p);
+    u32 save = s_ibuf_pa;
+    s_ibuf_pa = osConvertVirtToPhys(idx) - s_buf_base;
+    draw_elements(0, count);
+    s_ibuf_pa = save;
+    p = cmd_begin(4);
+    if (!p)
+        return;
+    p = wr(p, GPUREG_ATTRIBBUFFER0_OFFSET, 0xF, s_vbuf_off);
+    cmd_end(p);
 }
 
 void gfxb_draw_indexed(const uint16_t *idx, int count)
