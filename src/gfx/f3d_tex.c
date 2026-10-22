@@ -212,8 +212,6 @@ static u64 load_hash(const u8 *src, u32 span, const u32 *params, u32 nparams)
 /* Key for TMEM bytes [start, start + len), which may wrap. */
 static u64 region_key(u64 h, u32 start, u32 len)
 {
-    if (g_f3d_rec)
-        f3d_rec_tmem_read(start, len);
     u32 s0 = start & (TMEM_SIZE - 1), e0 = s0 + len;
     for (int i = s_nloads - 1; i >= 0; i--) {
         u32 a = s_loads[i].start, b = s_loads[i].end;
@@ -429,10 +427,6 @@ int tex_loadblock(u32 w0, u32 w1)
     u32 lrs = (w1 >> 12) & 0xFFF, dxt = w1 & 0xFFF;
     u32 n = lrs - uls + 1, base = t->tmem * 8;
 
-    if (g_f3d_rec) {
-        f3d_rec_timg_read();
-        f3d_rec_tile_read((w1 >> 24) & 7, 0);
-    }
     if (!s_timg.addr || lrs < uls)
         return 0;
     const u8 *src = (const u8 *)(uintptr_t)s_timg.addr + (((ult * s_timg.width + uls) << s_timg.siz) >> 1);
@@ -444,8 +438,6 @@ int tex_loadblock(u32 w0, u32 w1)
     u32 e0 = s_timg.siz == G_IM_SIZ_32b ? TMEM_SIZE : base + ((span + 7) & ~7u);
     if (e0 > s0 + TMEM_SIZE)
         e0 = s0 + TMEM_SIZE;
-    if (g_f3d_rec)
-        f3d_rec_tmem_load(s0, e0);
     if (load_is_current(s0, e0, h))
         return 0;                   /* reloaded as it is: TMEM unchanged */
     record_load(s0, e0, h);
@@ -463,10 +455,6 @@ int tex_loadtile(u32 w0, u32 w1)
     u32 lrs = ((w1 >> 12) & 0xFFF) >> 2, lrt = (w1 & 0xFFF) >> 2;
     u32 base = t->tmem * 8, stride = t->line * 8;
 
-    if (g_f3d_rec) {
-        f3d_rec_timg_read();
-        f3d_rec_tile_read((w1 >> 24) & 7, 0);
-    }
     if (!s_timg.addr || lrs < uls || lrt < ult)
         return 0;
     int changed = t->uls != uls << 2 || t->ult != ult << 2 || t->lrs != lrs << 2 || t->lrt != lrt << 2;
@@ -489,8 +477,6 @@ int tex_loadtile(u32 w0, u32 w1)
            : base + (lrt - ult) * stride + ((((lrs - uls + 1) << s_timg.siz) >> 1) + 7) / 8 * 8;
     if (e0 > s0 + TMEM_SIZE)
         e0 = s0 + TMEM_SIZE;
-    if (g_f3d_rec)
-        f3d_rec_tmem_load(s0, e0);
     if (load_is_current(s0, e0, h))
         return changed;             /* reloaded as it is: TMEM unchanged */
     record_load(s0, e0, h);
@@ -511,10 +497,6 @@ int tex_loadtlut(u32 w0, u32 w1)
     u32 count = lrs - uls + 1, base = t->tmem * 8;
     const u8 *src = (const u8 *)(uintptr_t)s_timg.addr;
 
-    if (g_f3d_rec) {
-        f3d_rec_timg_read();
-        f3d_rec_tile_read((w1 >> 24) & 7, 0);
-    }
     if (!src || lrs < uls)
         return 0;
     src += (((ult * s_timg.width + uls) << s_timg.siz) >> 1);
@@ -523,8 +505,6 @@ int tex_loadtlut(u32 w0, u32 w1)
     u32 params[3] = { 3, base, count };
     u64 h = load_hash(src, count * 2, params, 3);
     u32 e0 = base + count * 8;
-    if (g_f3d_rec)
-        f3d_rec_tmem_load(base, e0);
     if (load_is_current(base, e0, h))
         return 0;                   /* the same palette again */
     note_write(base, e0);
@@ -759,10 +739,6 @@ static void tile_prep(int tile, u32 om_h, TexMap *map, TilePrep *pp)
 {
     tile &= 7;
     const Tile *t = &s_tile[tile];
-    if (g_f3d_rec) {
-        f3d_rec_tile_read(tile, 0);
-        f3d_rec_tile_read(tile, 1);
-    }
     u32 tlut_type = (om_h >> G_MDSFT_TEXTLUT) & 3;
     u32 filt = (om_h >> G_MDSFT_TEXTFILT) & 3;
     int linear = filt != (G_TF_POINT >> G_MDSFT_TEXTFILT);
@@ -982,69 +958,6 @@ u16 tex_get_mip(int tile, int levels, u32 om_h, TexMap *map)
     return gfxb_tex_create_mip(key, lv, n, w, h, pp[0].as.wrap, pp[0].at.wrap, pp[0].linear);
 }
 
-/* ---- Room replay (f3d.c) ---------------------------------------------- */
-
-void tex_regs_get(TexRegs *r)
-{
-    __builtin_memcpy(r->tile, s_tile, sizeof s_tile);
-    __builtin_memcpy(r->set, s_tile_set, sizeof s_tile_set);
-    __builtin_memcpy(r->size, s_tile_size, sizeof s_tile_size);
-    r->timg_fmt = s_timg.fmt;
-    r->timg_siz = s_timg.siz;
-    r->timg_width = s_timg.width;
-    r->timg_addr = s_timg.addr;
-}
-
-int tex_regs_tile_same(const TexRegs *r, int i, int size)
-{
-    const Tile *a = &s_tile[i], *b = &r->tile[i];
-    if (size)
-        return a->uls == b->uls && a->ult == b->ult && a->lrs == b->lrs && a->lrt == b->lrt;
-    return s_tile_set[i][0] == r->set[i][0] && s_tile_set[i][1] == r->set[i][1];
-}
-
-int tex_regs_timg_same(const TexRegs *r)
-{
-    return s_timg.fmt == r->timg_fmt && s_timg.siz == r->timg_siz && s_timg.width == r->timg_width &&
-           s_timg.addr == r->timg_addr;
-}
-
-/* The load records as they are (a room's on entry), and the key of TMEM
- * bytes [start, start + len) by them (no recording hook). */
-void tex_loads_get(TexLoads *l)
-{
-    l->n = s_nloads;
-    for (int i = 0; i < s_nloads; i++) {
-        l->start[i] = s_loads[i].start;
-        l->end[i] = s_loads[i].end;
-        l->hash[i] = s_loads[i].hash;
-    }
-}
-
-u64 tex_loads_key(const TexLoads *l, u32 start, u32 len)
-{
-    TexLoads live;
-    if (!l) {
-        tex_loads_get(&live);
-        l = &live;
-    }
-    u64 h = 0xCBF29CE484222325ull;
-    u32 s0 = start & (TMEM_SIZE - 1), e0 = s0 + len;
-    for (int i = l->n - 1; i >= 0; i--) {
-        u32 a = l->start[i], b = l->end[i];
-        if ((a < e0 && b > s0) || (e0 > TMEM_SIZE && a < e0 - TMEM_SIZE)) {
-            u32 v[4] = { (u32)l->hash[i], (u32)(l->hash[i] >> 32), a, b };
-            h = hash_words(h, (const u8 *)v, sizeof v);
-        }
-    }
-    return h;
-}
-
-void tex_rec_begin(void)
-{
-    s_gen++;
-    s_hi_gen++;
-}
 
 void tex_debug_tile(int i)   /* DEBUG(temp) */
 {
