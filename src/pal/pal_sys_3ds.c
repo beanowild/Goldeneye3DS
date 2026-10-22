@@ -122,6 +122,21 @@ PalThread *pal_thread_start_sys_core(void (*fn)(void *), void *arg, size_t stack
     return t;
 }
 
+int pal_swap_cores(void)
+{
+    static int s_swap = -1;
+    if (s_swap < 0)
+        s_swap = !pal_is_new3ds() && pal_debug_has_token("-swapcores");
+    return s_swap;
+}
+
+PalThread *pal_thread_start_game(void (*fn)(void *), void *arg, size_t stack_size, int prio)
+{
+    if (pal_swap_cores())
+        return pal_thread_start_sys_core(fn, arg, stack_size, prio);
+    return pal_thread_start(fn, arg, stack_size, prio);
+}
+
 void pal_thread_set_priority(PalThread *t, int prio)
 {
     Handle h = t ? threadGetHandle(t->th) : CUR_THREAD_HANDLE;

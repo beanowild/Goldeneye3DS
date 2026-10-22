@@ -46,6 +46,11 @@ typedef struct PalThread PalThread;
  * single core the same way, so keeping one core keeps those assumptions true.
  * Returns NULL on failure. */
 PalThread *pal_thread_start(void (*fn)(void *), void *arg, size_t stack_size, int prio);
+/* A game (libultra) thread: like pal_thread_start, except on an Old 3DS
+ * with the developer token -swapcores, where the game runs on core 1 and
+ * the graphics tasks on core 0 (os_sp.c) instead of the other way round. */
+PalThread *pal_thread_start_game(void (*fn)(void *), void *arg, size_t stack_size, int prio);
+int pal_swap_cores(void);
 
 /* The same, but on a spare core when there is one (the New 3DS's core 2),
  * else like pal_thread_start. Only for threads that stand in for separate

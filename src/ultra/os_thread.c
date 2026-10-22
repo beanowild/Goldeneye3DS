@@ -240,7 +240,7 @@ void osStartThread(OSThread *t)
 
     t->state = OS_STATE_RUNNABLE;
     s->prio_3ds = map_priority(t->priority);
-    s->pal = pal_thread_start(trampoline, s, OS_PORT_THREAD_STACK, s->prio_3ds);
+    s->pal = pal_thread_start_game(trampoline, s, OS_PORT_THREAD_STACK, s->prio_3ds);
     if (!s->pal)
         pal_fatal("osStartThread: could not create thread %d", (int)t->id);
     pal_log("ge007: thread %d started (N64 pri %d -> 3DS 0x%02X)",

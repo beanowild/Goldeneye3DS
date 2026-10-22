@@ -146,7 +146,7 @@ void osPortTimeInit(void)
     s_timers.next = &s_timers;
     s_timers.prev = &s_timers;
 
-    if (!pal_thread_start(timer_thread, NULL, TIMER_THREAD_STACK, PAL_PRIO_SERVICE))
+    if (!pal_thread_start_game(timer_thread, NULL, TIMER_THREAD_STACK, PAL_PRIO_SERVICE))
         pal_fatal("could not start the timer thread");
 }
 

@@ -124,7 +124,11 @@ void osPortSpInit(void)
     /* Old 3DS with the synthesizer on the DSP (audio/dsp_synth.c): the
      * audio tasks are empty, so core 1 is free for the graphics tasks and
      * core 0 is left to the game, as the N64 split CPU and RSP. */
-    if (!pal_is_new3ds() && pal_audio_voices_available() && !pal_debug_has_token("-cpuaudio")) {
+    if (pal_swap_cores()) {
+        pal_log("ge007: graphics tasks on core 0, the game on core 1 (-swapcores)");
+        if (!pal_thread_start(task_thread, &s_lanes[LANE_GFX], TASK_THREAD_STACK, PAL_PRIO_RSP))
+            pal_fatal("could not start the graphics task thread");
+    } else if (!pal_is_new3ds() && pal_audio_voices_available() && !pal_debug_has_token("-cpuaudio")) {
         pal_log("ge007: graphics tasks on core 1");
         if (!pal_thread_start_sys_core(task_thread, &s_lanes[LANE_GFX], TASK_THREAD_STACK, PAL_PRIO_RSP))
             pal_fatal("could not start the graphics task thread");
