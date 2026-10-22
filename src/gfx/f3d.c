@@ -1001,8 +1001,16 @@ static __attribute__((noinline)) int debug_hidden(const GfxState *st)
 
 static void rec_triangle(int i0, int i1, int i2);
 
+/* A vertex slot a replayed room left loaded, not transformed yet (see
+ * room_replay): Vert.idx holds VTX_LAZY until a triangle uses it. */
+#define VTX_LAZY (-2)
+static void lazy_vertex(int i);
+
 static inline __attribute__((always_inline)) void triangle(int i0, int i1, int i2)
 {
+    if (__builtin_expect(R.vtx[i0].idx == VTX_LAZY, 0)) lazy_vertex(i0);
+    if (__builtin_expect(R.vtx[i1].idx == VTX_LAZY, 0)) lazy_vertex(i1);
+    if (__builtin_expect(R.vtx[i2].idx == VTX_LAZY, 0)) lazy_vertex(i2);
     const Vert *a = &R.vtx[i0], *b = &R.vtx[i1], *c = &R.vtx[i2];
     if (__builtin_expect(g_f3d_rec, 0))
         rec_triangle(i0, i1, i2);
@@ -1651,8 +1659,13 @@ static void room_exit(const Room *rm)
     R.state_live = 0;
 }
 
+static const Room *s_lazy_rm;
+static void lazy_flush(void);
+
 static void room_free(int i)
 {
+    if (s_rooms[i] && s_rooms[i] == s_lazy_rm)
+        lazy_flush();
     if (s_rooms[i]) {
         s_room_bytes -= s_rooms[i]->bytes;
         __builtin_free(s_rooms[i]);
@@ -2148,6 +2161,34 @@ static void room_cpu_vertices(const Room *rm, const Xform *pal, const u16 *which
     }
 }
 
+/* Lazy vertex slots (VTX_LAZY): the room and transforms of the last
+ * replay that left any. Most are reloaded before a triangle uses them. */
+static const Room *s_lazy_rm;
+static Xform s_lazy_pal[GFX_XFORM_MAX];
+static u16 s_lazy_which[NUM_VTX];
+
+static void lazy_vertex(int i)
+{
+    Vert *d = &R.vtx[i];
+    GfxVtx *o;
+    int idx = gfxb_vtx_alloc(1, &o);
+    d->idx = idx;
+    if (idx < 0)
+        return;
+    room_cpu_vertices(s_lazy_rm, s_lazy_pal, &s_lazy_which[i], 1, o);
+    d->o = o;
+    d->x = o->x;
+    d->y = o->y;
+    d->w = o->w;
+}
+
+static void lazy_flush(void)
+{
+    for (int i = 0; i < NUM_VTX; i++)
+        if (R.vtx[i].idx == VTX_LAZY)
+            lazy_vertex(i);
+}
+
 /* A model part's states with the colours as they are now, where they were
  * the ones found on entry (model.c's tint): the combiner compiled again
  * (cc_compile memoises), the fog stage's colour replaced. NULL if a
@@ -2334,23 +2375,26 @@ static int room_replay(Room *rm)
         R.mvp_dirty = 1;
     }
 
-    /* the vertex slots the list left loaded, for what follows it */
+    /* the vertex slots the list left loaded, for what follows it: marked,
+     * and transformed if a triangle uses them (lazy_vertex). An earlier
+     * replay's marked slots this one leaves alone are done first, while
+     * their transforms are still kept. */
+    int any = 0;
     for (int i = 0; i < NUM_VTX; i++) {
-        int r = rm->slot[i];
-        if (r < 0)
-            continue;
-        GfxVtx *o;
-        int idx = gfxb_vtx_alloc(1, &o);
-        Vert *d = &R.vtx[i];
-        d->idx = idx;
-        if (idx < 0)
-            continue;
-        u16 which = (u16)r;
-        room_cpu_vertices(rm, xf, &which, 1, o);
-        d->o = o;
-        d->x = o->x;
-        d->y = o->y;
-        d->w = o->w;
+        if (rm->slot[i] >= 0)
+            any = 1;
+        else if (R.vtx[i].idx == VTX_LAZY)
+            lazy_vertex(i);
+    }
+    if (any) {
+        s_lazy_rm = rm;
+        __builtin_memcpy(s_lazy_pal, pal, rm->npal * sizeof pal[0]);
+        for (int i = 0; i < NUM_VTX; i++) {
+            if (rm->slot[i] < 0)
+                continue;
+            s_lazy_which[i] = (u16)rm->slot[i];
+            R.vtx[i].idx = VTX_LAZY;
+        }
     }
     return 1;
 }
