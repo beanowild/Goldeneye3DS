@@ -1,12 +1,14 @@
 """
 romtocia.py - turns your own GoldenEye 007 ROM into an installable 3DS CIA.
 
-    romtocia.exe "GoldenEye 007 (USA).z64"      (or drop the ROM on the exe)
+    py -3 romtocia.py "GoldenEye 007 (USA).z64"   (or drop the ROM on "ROM to CIA.bat")
 
-Built into a single exe by build_exe.py. The exe holds the compiled port
-(whose only game data is what the public n64decomp/007 repo already has),
-makerom, bannertool and the banner sound; nothing from the ROM. On the
-player's PC it:
+Shipped as a folder by build_py.py: this script, payload/ (the compiled
+port, whose only game data is what the public n64decomp/007 repo already
+has; makerom, bannertool, the banner sound) and lib/ (the banner code from
+tools/banner and tools/cia); nothing from the ROM. On first use it installs
+Pillow and gltflib with pip and downloads pycgfx (at a fixed commit) into
+lib/. On the player's PC it:
   1. checks the ROM is the NTSC-U release (.z64, .v64 or .n64)
   2. cuts Bond, the PP7, the logo and their textures out of it and builds
      the 3D HOME Menu banner (tools/banner: export.py, banner_glb.py, pycgfx)
@@ -21,9 +23,16 @@ import tempfile
 import zlib
 from pathlib import Path
 
-# bundled by build_exe.py; from a source checkout, the repo's own files
+HERE = Path(__file__).resolve().parent
+PYCGFX_COMMIT = "1f78850086f3a77c41e07162e842f97a5bf3c18a"   # github.com/skyfloogle/pycgfx
+
+# bundled by build_exe.py; the shipped folder (build_py.py); else a source
+# checkout, with the repo's own files
 if getattr(sys, "frozen", False):
     PAYLOAD = Path(sys._MEIPASS) / "payload"
+elif (HERE / "lib").is_dir():
+    PAYLOAD = HERE / "payload"
+    sys.path[:0] = [str(HERE / "lib"), str(HERE / "lib" / "pycgfx")]
 else:
     ROOT = Path(__file__).resolve().parents[2]
     PAYLOAD = Path(__file__).resolve().parent / "payload"
@@ -90,6 +99,55 @@ def cut_assets(rom, assets):
         (assets / f.name).write_bytes(f.read_bytes())
 
 
+def ensure_deps():
+    """First run of the shipped folder: Pillow and gltflib from pip, pycgfx
+    from GitHub into lib/pycgfx."""
+    if getattr(sys, "frozen", False) or not (HERE / "lib").is_dir():
+        return
+    missing = []
+    for mod, pkg in (("PIL", "pillow"), ("gltflib", "gltflib")):
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        print(f"First run: installing {', '.join(missing)} with pip...")
+        user = ["--user"] if sys.prefix == sys.base_prefix else []   # not in a venv
+        r = subprocess.run([sys.executable, "-m", "pip", "install", *user, *missing])
+        if r.returncode:
+            raise Fail("pip couldn't install " + ", ".join(missing) + ". Run:\n  "
+                       + f'"{sys.executable}" -m pip install ' + " ".join(missing))
+        import site, importlib
+        site.addsitedir(site.getusersitepackages())
+        importlib.invalidate_caches()
+    dest = HERE / "lib" / "pycgfx"
+    if not (dest / "main.py").is_file():
+        import io, shutil, urllib.request, zipfile
+        url = f"https://github.com/skyfloogle/pycgfx/archive/{PYCGFX_COMMIT}.zip"
+        print("First run: downloading pycgfx (the banner converter)...")
+        try:
+            data = urllib.request.urlopen(url, timeout=60).read()
+        except Exception as e:
+            raise Fail(f"Couldn't download {url}\n({e}). Check the internet connection.")
+        tmp = HERE / "lib" / "pycgfx.tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            top = f"pycgfx-{PYCGFX_COMMIT}/"
+            for name in z.namelist():
+                if name.startswith(top) and (name.endswith(".py") or "/cgfx/" in name) and not name.endswith("/"):
+                    out = tmp / name[len(top):]
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(z.read(name))
+        if not (tmp / "main.py").is_file():
+            raise Fail("The pycgfx download didn't have main.py.")
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp.rename(dest)
+        # on sys.path since start-up, when it didn't exist yet
+        import importlib
+        sys.path_importer_cache.pop(str(dest), None)
+        importlib.invalidate_caches()
+
+
 def build_banner(rom, work):
     """banner.cgfx built from the cut files (tools/banner/build.ps1 without Blender)."""
     assets = work / "assets"
@@ -122,6 +180,7 @@ def make_cia(rom_path):
                    "Only the unmodified NTSC-U release is supported.")
     print("ROM OK: GoldenEye 007 (USA)")
     out = Path(rom_path).resolve().with_name(OUT_NAME)
+    ensure_deps()
     with tempfile.TemporaryDirectory(prefix="ge007cia_") as tmp:
         work = Path(tmp)
         print("Building the HOME Menu banner from the ROM...")
@@ -170,7 +229,7 @@ def main():
     try:
         rom = pick_rom()
         if not rom:
-            raise Fail("Drag your GoldenEye 007 (USA) ROM onto this exe.")
+            raise Fail('Drag your GoldenEye 007 (USA) ROM onto "ROM to CIA.bat".')
         make_cia(rom)
     except Fail as e:
         print(f"\nError: {e}")
