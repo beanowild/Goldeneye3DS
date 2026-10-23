@@ -143,6 +143,12 @@ void osPortVblank(void)
                 (unsigned long)pal_audio_underruns());
         s_held2 = s_held3 = 0;
         {
+            uint32_t as[4];
+            pal_audio_stats(as);
+            pal_perf_log("ge007: DSP %lu frames dropped; voice events: %lu untimed, %lu queued at most, %lu lost",
+                         (unsigned long)as[0], (unsigned long)as[1], (unsigned long)as[2], (unsigned long)as[3]);
+        }
+        {
             /* the game's own work per frame (frametiming.c: up to its wait
              * for the next frame), in osGetCount ticks */
             extern u32 g_PortWorkSum, g_PortWorkMax, g_PortWorkN;

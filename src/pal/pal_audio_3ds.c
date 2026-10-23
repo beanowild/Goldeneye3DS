@@ -84,6 +84,8 @@ typedef struct {
     ndspWaveBuf wb[VOICE_BUFS];
 } Voice;
 
+static bool           s_polyphase;
+static uint32_t       s_untimed, s_ring_peak;   /* stats (pal_audio_stats) */
 static PalVoiceEvent  *s_ring;
 static volatile uint32_t s_ring_head, s_ring_tail;   /* head: written, tail: read */
 static uint32_t        s_ring_dropped;
@@ -111,7 +113,10 @@ static void voice_start(int v, const PalVoiceEvent *ev)
     if (!ev->pcm || ev->len == 0)
         return;
     ndspChnSetFormat(ch, NDSP_FORMAT_MONO_PCM16);
-    ndspChnSetInterp(ch, NDSP_INTERP_POLYPHASE);
+    /* linear: polyphase on many channels is more than the DSP can do in
+     * a frame on hardware (Azahar doesn't model its cost); it drops frames
+     * and the sound slows and loses events. -polyphase to compare. */
+    ndspChnSetInterp(ch, s_polyphase ? NDSP_INTERP_POLYPHASE : NDSP_INTERP_LINEAR);
     ndspChnSetRate(ch, ev->rate);
     vo->cl = vo->tl = ev->l;
     vo->cr = vo->tr = ev->r;
@@ -213,6 +218,8 @@ static void frame_callback(void *arg)
         const PalVoiceEvent *ev = &s_ring[tail & (RING_SIZE - 1)];
         if (timed && (int32_t)(ev->time - now) > 0)
             break;
+        if (!timed)
+            s_untimed++;
         voice_apply(ev);
         tail++;
     }
@@ -250,6 +257,7 @@ static void voices_init(void)
         return;
     }
     s_ring_head = s_ring_tail = 0;
+    s_polyphase = pal_debug_has_token("-polyphase");
     for (int v = 0; v < PAL_VOICE_COUNT; v++) {
         ndspChnReset(v + 1);
         s_voices[v].ml = s_voices[v].mr = -1.0f;
@@ -271,6 +279,18 @@ static void voices_exit(void)
     s_voices = NULL;
 }
 
+void pal_audio_stats(uint32_t out[4])
+{
+    static uint32_t s_dropped0;
+    uint32_t d = s_dsp ? ndspGetDroppedFrames() : 0;
+    out[0] = d - s_dropped0;   /* DSP frames dropped since the last call */
+    s_dropped0 = d;
+    out[1] = s_untimed;        /* voice events applied with no stream to time them */
+    out[2] = s_ring_peak;      /* most voice events waiting at once */
+    out[3] = s_ring_dropped;   /* voice events lost to a full queue (total) */
+    s_untimed = s_ring_peak = 0;
+}
+
 bool pal_audio_voices_available(void)
 {
     return s_dsp && s_voices != NULL;
@@ -288,6 +308,9 @@ void pal_audio_voice_event(const PalVoiceEvent *ev)
     }
     s_ring[head & (RING_SIZE - 1)] = *ev;
     __atomic_store_n(&s_ring_head, head + 1, __ATOMIC_RELEASE);
+    uint32_t fill = head + 1 - s_ring_tail;
+    if (fill > s_ring_peak)
+        s_ring_peak = fill;
 }
 
 /* ---- API ------------------------------------------------------------------ */
