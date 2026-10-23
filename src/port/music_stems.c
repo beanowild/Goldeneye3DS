@@ -185,6 +185,30 @@ void portMusicStems(void)
     {
         extern int pal_debug_has_token(const char *token);
         extern s32 g_PortDspSynth, g_PortDspSoft;
+        if (pal_debug_has_token("-audiolive")) {
+            /* the track live through the DSP voices, paced by the stream
+             * as the audio thread would be: record it and compare with
+             * trackNN_mix.wav */
+            extern s32 osAiSetNextBuffer(void *bufPtr, u32 size);
+            extern void pal_sleep_us(u32 us);
+            g_PortDspSynth = !pal_debug_has_token("-cpuaudio");
+            reset_synth();
+            {   /* livech.txt: that channel alone */
+                s32 ch = pal_debug_read_int("sdmc:/3ds/ge007/livech.txt", -1);
+                g_PortSeqMute = ch >= 0 ? (u16)~(1u << ch) : 0;
+            }
+            musicTrack1Play(track);
+            pal_log("stems: live from now");
+            for (s32 i = 0; i < seconds * rate / frame; i++) {
+                amPortRenderFrame(s_buf, frame);
+                while (osAiSetNextBuffer(s_buf, frame * 4) != 0)
+                    pal_sleep_us(1000);
+            }
+            musicTrack1Stop();
+            g_PortDspSynth = 0;
+            pal_log("stems: done");
+            return;
+        }
         if (pal_debug_has_token("-audiocheck")) {
             g_PortDspSynth = g_PortDspSoft = 1;
             put(put2(put(name, "track"), track), "_dspmix");

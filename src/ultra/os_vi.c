@@ -145,6 +145,7 @@ void osPortVblank(void)
         {
             uint32_t as[5];
             pal_audio_stats(as);
+
             pal_perf_log("ge007: DSP %lu frames dropped; voice events: %lu untimed, %lu queued at most, %lu lost; "
                          "%lu stream clock jumps",
                          (unsigned long)as[0], (unsigned long)as[1], (unsigned long)as[2], (unsigned long)as[3],

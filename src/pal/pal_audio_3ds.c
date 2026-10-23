@@ -111,13 +111,22 @@ static void voice_start(int v, const PalVoiceEvent *ev)
     Voice *vo = &s_voices[v];
     int ch = v + 1, n = 0;
 
-    ndspChnWaveBufClear(ch);
-    if (!ev->pcm || ev->len == 0)
+    /* A full reset, not ndspChnWaveBufClear: the DSP drops a cleared
+     * channel's queue but keeps playing the buffer it is in, and a new
+     * buffer queued in the same frame waits behind it (and libctru never
+     * gets to send "stop" in between). Old notes droned on for the rest of
+     * their sample and new ones started late. The reset clears the
+     * channel's DSP state, the current buffer with it; everything is set
+     * again below. */
+    ndspChnReset(ch);
+    vo->ml = vo->mr = -1.0f;   /* the reset put the mix at 1, 1 */
+    if (!ev->pcm || ev->len == 0) {
+        voice_set_mix(v, 0, 0);
         return;
+    }
     ndspChnSetFormat(ch, NDSP_FORMAT_MONO_PCM16);
-    /* linear: polyphase on many channels is more than the DSP can do in
-     * a frame on hardware (Azahar doesn't model its cost); it drops frames
-     * and the sound slows and loses events. -polyphase to compare. */
+    /* linear: cheaper for the DSP than polyphase with 23 channels (whose
+     * cost on hardware is untested); -polyphase to compare */
     ndspChnSetInterp(ch, s_polyphase ? NDSP_INTERP_POLYPHASE : NDSP_INTERP_LINEAR);
     ndspChnSetRate(ch, ev->rate);
     vo->cl = vo->tl = ev->l;
