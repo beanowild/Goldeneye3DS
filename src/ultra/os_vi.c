@@ -143,10 +143,12 @@ void osPortVblank(void)
                 (unsigned long)pal_audio_underruns());
         s_held2 = s_held3 = 0;
         {
-            uint32_t as[4];
+            uint32_t as[5];
             pal_audio_stats(as);
-            pal_perf_log("ge007: DSP %lu frames dropped; voice events: %lu untimed, %lu queued at most, %lu lost",
-                         (unsigned long)as[0], (unsigned long)as[1], (unsigned long)as[2], (unsigned long)as[3]);
+            pal_perf_log("ge007: DSP %lu frames dropped; voice events: %lu untimed, %lu queued at most, %lu lost; "
+                         "%lu stream clock jumps",
+                         (unsigned long)as[0], (unsigned long)as[1], (unsigned long)as[2], (unsigned long)as[3],
+                         (unsigned long)as[4]);
         }
         {
             /* the game's own work per frame (frametiming.c: up to its wait

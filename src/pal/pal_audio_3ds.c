@@ -86,6 +86,8 @@ typedef struct {
 
 static bool           s_polyphase;
 static uint32_t       s_untimed, s_ring_peak;   /* stats (pal_audio_stats) */
+static uint32_t       s_clock_jumps, s_tag_end;
+static bool           s_tag_valid;
 static PalVoiceEvent  *s_ring;
 static volatile uint32_t s_ring_head, s_ring_tail;   /* head: written, tail: read */
 static uint32_t        s_ring_dropped;
@@ -279,7 +281,7 @@ static void voices_exit(void)
     s_voices = NULL;
 }
 
-void pal_audio_stats(uint32_t out[4])
+void pal_audio_stats(uint32_t out[5])
 {
     static uint32_t s_dropped0;
     uint32_t d = s_dsp ? ndspGetDroppedFrames() : 0;
@@ -288,7 +290,8 @@ void pal_audio_stats(uint32_t out[4])
     out[1] = s_untimed;        /* voice events applied with no stream to time them */
     out[2] = s_ring_peak;      /* most voice events waiting at once */
     out[3] = s_ring_dropped;   /* voice events lost to a full queue (total) */
-    s_untimed = s_ring_peak = 0;
+    out[4] = s_clock_jumps;    /* stream buffers not continuing the last one */
+    s_untimed = s_ring_peak = s_clock_jumps = 0;
 }
 
 bool pal_audio_voices_available(void)
@@ -435,6 +438,12 @@ static bool submit(const void *pcm, uint32_t bytes, uint32_t time, bool tagged)
         memset(wb, 0, sizeof(*wb));
         s_wb_time[i] = time;
         s_wb_tagged[i] = tagged;
+        if (tagged) {   /* each buffer should start where the last one ended */
+            if (s_tag_valid && time != s_tag_end)
+                s_clock_jumps++;
+            s_tag_end = time + bytes / FRAME_BYTES;
+            s_tag_valid = true;
+        }
         wb->data_vaddr = dst;
         wb->nsamples = bytes / FRAME_BYTES;
         ndspChnWaveBufAdd(CHANNEL, wb);

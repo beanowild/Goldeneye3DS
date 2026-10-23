@@ -71,8 +71,9 @@ typedef struct {
 
 bool pal_audio_voices_available(void);  /* DSP running */
 /* Since the last call: DSP frames dropped, voice events applied untimed,
- * peak voice events queued; and voice events lost (total). */
-void pal_audio_stats(uint32_t out[4]);
+ * peak voice events queued, voice events lost (total), stream buffers whose
+ * synthesizer time doesn't follow on from the last one. */
+void pal_audio_stats(uint32_t out[5]);
 void pal_audio_voice_event(const PalVoiceEvent *ev);
 bool pal_audio_submit_tagged(const void *pcm, uint32_t bytes, uint32_t time);
 

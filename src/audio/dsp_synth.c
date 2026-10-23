@@ -748,9 +748,16 @@ void dspsyn_frame(ALSynth *drvr, s16 *outBuf, s32 outLen)
         }
     }
 
-    s_tags[s_tag_next & 7].buf = outBuf;
-    s_tags[s_tag_next & 7].time = start;
-    s_tag_next++;
+    /* one entry per buffer: the game cycles three, and a stale entry for
+     * the same buffer put the stream's clock frames back (late events) */
+    int slot = -1;
+    for (int i = 0; i < 8; i++)
+        if (s_tags[i].buf == outBuf)
+            slot = i;
+    if (slot < 0)
+        slot = (int)(s_tag_next++ & 7);
+    s_tags[slot].buf = outBuf;
+    s_tags[slot].time = start;
     drvr->curSamples += outLen;
 }
 
